@@ -1,6 +1,6 @@
 {
   "live": true,
-  "router": "0xB47fA098055677792Aafd3211183080cb471A6fd",
+  "router": "0xc33046f9fe8dbC8323C3A9f9dE50754b45bBF5fb",
   "rpc": "https://rpc.mainnet.chain.robinhood.com",
   "poll_seconds": 0.5,
   "buy_usd": 100,
@@ -40,5 +40,5 @@
   "ws": false,
   "ws_backstop_seconds": 20,
   "ws_stale_seconds": 90,
-  "native_eth_routes": false
+  "native_eth_routes": true
 }
