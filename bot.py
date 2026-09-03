@@ -1445,8 +1445,8 @@ def run_exits():
             continue
         except Exception as e:
             pos["sell_failures"] = pos.get("sell_failures", 0) + 1
-            if "slippage" in str(e) and pos["sell_failures"] <= 3:
-                wait = 5  # price moved between quote and send: re-quote almost immediately
+            if ("slippage" in str(e) or "reverted" in str(e)) and pos["sell_failures"] <= 3:
+                wait = 5  # price moved between quote and inclusion: re-quote almost immediately
             else:
                 wait = min(CFG.get("sell_retry_seconds", 300) * 2 ** (pos["sell_failures"] - 1), 3600)
             pos["retry_after"] = now + wait
@@ -1471,7 +1471,9 @@ def poll_once(cursor, url=None):
     if _wl_pad is None:
         _wl_pad = [pad(a) for a in WALLETS]
     last = cursor
-    head = int(rpc("eth_blockNumber", [], url=url), 16)
+    # scan to one block behind the reported head: a load-balanced RPC can answer
+    # the log query from a node that has not seen the newest block yet
+    head = int(rpc("eth_blockNumber", [], url=url), 16) - 1
     # Alchemy's free/PAYG tiers cap eth_getLogs at 10 blocks; the public RPC and most
     # other providers don't, so scan wider windows there (fewer requests, less lag)
     chunk = CFG.get("log_chunk_blocks", 10) if "alchemy" in (url or rpc_url()) else CFG.get("log_chunk_blocks_open", 50)
@@ -1713,7 +1715,8 @@ def cmd_run():
             else:
                 log(f"  [warn] poll failed, retrying: {e}")
         except Exception as e:
-            log(f"  [warn] poll failed, retrying: {e}")
+            if "beyond current head" not in str(e):  # node lag: silently retry next tick
+                log(f"  [warn] poll failed, retrying: {e}")
 
 
 def cmd_status():
