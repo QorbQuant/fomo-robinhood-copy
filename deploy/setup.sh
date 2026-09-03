@@ -11,6 +11,7 @@ mkdir -p data ../rh-copybot-paper/data
 [ -e ../rh-copybot-paper/wallets.json ] || ln -s ../rh-copybot/wallets.json ../rh-copybot-paper/wallets.json
 install -m 644 deploy/rh-copybot.service /etc/systemd/system/rh-copybot.service
 install -m 644 deploy/rh-copybot-paper.service /etc/systemd/system/rh-copybot-paper.service
+install -m 644 deploy/rh-copybot-notify.service /etc/systemd/system/rh-copybot-notify.service
 systemctl daemon-reload
 systemctl enable rh-copybot rh-copybot-paper >/dev/null
 echo "installed. start with:  systemctl start rh-copybot rh-copybot-paper"

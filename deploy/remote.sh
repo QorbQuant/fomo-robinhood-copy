@@ -5,10 +5,13 @@
 #   stats       analytics report               restart     restart both bots
 #   push        push code/config changes, then restart both bots
 #   sell SYM    sell a live position            adopt TOKEN USD   adopt an orphaned bag
+#   notify      (re)start the Telegram notifier and show its pairing code    notifylogs  follow it
 HOST="${RH_HOST:-root@165.22.178.226}"
 cd "$(dirname "$0")/.."
 case "${1:-}" in
   logs)      exec ssh -t "$HOST" 'journalctl -fu rh-copybot -o cat' ;;
+  notify)    exec ssh -t "$HOST" 'systemctl enable --now rh-copybot-notify >/dev/null 2>&1; systemctl restart rh-copybot-notify; sleep 3; journalctl -u rh-copybot-notify -n 5 -o cat --no-pager' ;;
+  notifylogs) exec ssh -t "$HOST" 'journalctl -fu rh-copybot-notify -o cat' ;;
   paperlogs) exec ssh -t "$HOST" 'journalctl -fu rh-copybot-paper -o cat' ;;
   dash)      exec ssh -t "$HOST" 'cd /opt/rh-copybot && .venv/bin/python dash.py' ;;
   status)    exec ssh "$HOST" 'cd /opt/rh-copybot && .venv/bin/python bot.py status' ;;
