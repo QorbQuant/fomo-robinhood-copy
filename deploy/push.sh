@@ -17,13 +17,23 @@ if ! RPC_URL=https://rpc.mainnet.chain.robinhood.com BOT_HOME="$TMP" python3 -c 
 fi
 rm -rf "$TMP"
 ssh "$HOST" 'mkdir -p /opt/rh-copybot /opt/rh-copybot-paper'
+# The droplet's data/ (positions, logs, pairing) and .env (keys, tokens) are the
+# live truth once deployed: NEVER overwrite them on an update. They are only
+# seeded on the very first push (remote has no state.json yet).
+if ssh "$HOST" 'test -f /opt/rh-copybot/data/state.json'; then
+  LIVE_EXCL=(--exclude data --exclude .env); PAPER_EXCL=(--exclude data)
+  echo "update: leaving the droplet's data/ and .env untouched"
+else
+  LIVE_EXCL=(--exclude data/pricepaths); PAPER_EXCL=()
+  echo "first deploy: seeding data/ and .env from this laptop"
+fi
 rsync -az --delete --exclude .venv --exclude __pycache__ --exclude contracts/out --exclude contracts/cache \
-  --exclude data/pricepaths "$HERE/" "$HOST:/opt/rh-copybot/"
-rsync -az --exclude __pycache__ --exclude wallets.json "$PAPER/" "$HOST:/opt/rh-copybot-paper/"
+  "${LIVE_EXCL[@]}" "$HERE/" "$HOST:/opt/rh-copybot/"
+rsync -az --exclude __pycache__ --exclude wallets.json "${PAPER_EXCL[@]}" "$PAPER/" "$HOST:/opt/rh-copybot-paper/"
 PAPER2="$HERE/../rh-copybot-paper2"
 if [ -d "$PAPER2" ]; then
   ssh "$HOST" 'mkdir -p /opt/rh-copybot-paper2'
-  rsync -az --exclude __pycache__ "$PAPER2/" "$HOST:/opt/rh-copybot-paper2/"
+  rsync -az --exclude __pycache__ "${PAPER_EXCL[@]}" "$PAPER2/" "$HOST:/opt/rh-copybot-paper2/"
 fi
 ssh "$HOST" 'chmod +x /opt/rh-copybot/deploy/setup.sh && /opt/rh-copybot/deploy/setup.sh'
 echo
