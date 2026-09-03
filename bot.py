@@ -1479,6 +1479,14 @@ def run_exits():
                 sell(pos, pos["remaining_raw"], "origin exit")
                 pos["origin_done"] = True
                 save_state()
+            # every timed stage is done and the schedule adds up to a full exit, yet
+            # something is left (e.g. the schedule changed while the position was open):
+            # finish the job instead of waiting on the origin wallet
+            if (len(pos["stages_done"]) == len(CFG["exits"]) and sum(st["pct"] for st in CFG["exits"]) >= 100
+                    and pos["remaining_raw"] > pos["initial_raw"] * 0.001 and not pos["origin_done"]):
+                sell(pos, pos["remaining_raw"], "remainder")
+                pos["origin_done"] = True
+                save_state()
         except TxPending:
             continue
         except Exception as e:
