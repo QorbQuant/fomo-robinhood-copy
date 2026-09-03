@@ -39,5 +39,6 @@
   "rpc_batching": true,
   "ws": false,
   "ws_backstop_seconds": 20,
-  "ws_stale_seconds": 90
+  "ws_stale_seconds": 90,
+  "native_eth_routes": false
 }

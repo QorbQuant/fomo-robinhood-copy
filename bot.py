@@ -532,7 +532,7 @@ def v4_pool_key(pool_id):
     c0, c1, fee, tick, hooks = call(POSITION_MANAGER, "poolKeys(bytes25)", ["bytes25"],
                                     [bytes.fromhex(pool_id[2:52])],
                                     ["address", "address", "uint24", "int24", "address"])
-    if int(c0, 16) != 0:
+    if int(c1, 16) != 0:  # registered there (c0 may legitimately be native ETH = 0)
         key = {"c0": c0, "c1": c1, "fee": fee, "tick": tick, "hooks": hooks}
     else:
         flt = {"fromBlock": "0x0", "toBlock": "latest", "address": POOL_MANAGER,
@@ -550,8 +550,10 @@ def v4_pool_key(pool_id):
                        "tick": int.from_bytes(d[32:64], "big", signed=True),
                        "hooks": "0x" + d[64:96][-20:].hex()}
             break
-    if key and (int(key["c0"], 16) == 0 or int(key["c1"], 16) == 0):
-        key = None  # native-ETH pool: unsupported by the router
+    if key and int(key["c1"], 16) == 0:
+        key = None  # malformed
+    if key and int(key["c0"], 16) == 0 and not native_ok():
+        key = None  # native-ETH pool: needs CopyRouter v2 (config native_eth_routes)
     _pool_key_cache[pool_id] = key
     return key
 
@@ -589,9 +591,41 @@ def v4_direct(a, b):
     return None
 
 
+def native_ok():
+    return bool(CFG.get("native_eth_routes", False))
+
+
+_native_prefix = {"ts": 0.0, "legs": None}
+
+
+def native_prefix():
+    """Legs USDG->ETH and ETH->USDG through the deepest USDG/native-ETH v4 pool
+    (cached 10 min). None if the router can't do native or no pool resolves."""
+    if not native_ok():
+        return None
+    if time.time() - _native_prefix["ts"] < 600 and _native_prefix["legs"] is not None:
+        return _native_prefix["legs"]
+    best = None
+    for other, liq, pid in dex_pairs(USDG, "v4"):
+        if other.lower() != ZERO:
+            continue
+        key = v4_pool_key(pid)
+        if key and int(key["c0"], 16) == 0 and key["c1"].lower() == USDG.lower() and (best is None or liq > best[0]):
+            best = (liq, key)
+    legs = None
+    if best:
+        key = best[1]
+        legs = ([{"kind": 1, "key": key, "zf": False}],   # USDG (currency1) -> ETH
+                [{"kind": 1, "key": key, "zf": True}])    # ETH -> USDG
+    _native_prefix.update(ts=time.time(), legs=legs)
+    return legs
+
+
 def prefix_to(target, eth_price):
     """Legs USDG->target and target->USDG. V3 first; otherwise a single V4 pool
     quoted in USDG (e.g. FAMI), or in WETH behind the V3 USDG->WETH hop."""
+    if target.lower() == ZERO:  # the pool is quoted in native ETH
+        return native_prefix()
     v3 = v3_prefix_to(target, eth_price)
     if v3 is not None:
         return v3
@@ -660,7 +694,7 @@ def discover_route(token):
             break
 
     for other, liq, pair_id in dex_pairs(token, "v4")[:3]:  # always compete with v3 by depth
-        if other.lower() == ZERO:
+        if other.lower() == ZERO and not native_ok():
             continue
         key = v4_pool_key(pair_id)
         if key is None or token.lower() not in (key["c0"].lower(), key["c1"].lower()):
@@ -673,12 +707,16 @@ def discover_route(token):
         legs_buy = pre_buy + [{"kind": 1, "key": key, "zf": zf_buy}]
         legs_sell = [{"kind": 1, "key": key, "zf": not zf_buy}] + pre_sell
         hooked = " (hooked)" if int(key["hooks"], 16) else ""
-        cands.append((liq, legs_buy, legs_sell, f"v4 pool vs {other[:10]}..{hooked}"))
+        vs = "native ETH" if other.lower() == ZERO else other[:10] + ".."
+        cands.append((liq, legs_buy, legs_sell, f"v4 pool vs {vs}{hooked}"))
         break
 
     for depth, lb, ls, desc in sorted(cands, key=lambda c: -c[0]):
         try:
-            if quote_route(lb, 5 * 10**USDG_DEC) > 0:
+            # probe BOTH directions: a pool can quote buys yet revert every sell
+            # (one-sided liquidity), and we must be able to get out
+            out = quote_route(lb, 5 * 10**USDG_DEC)
+            if out > 0 and quote_route(ls, out) > 0:
                 return lb, ls, desc, depth
         except Exception:
             continue

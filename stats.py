@@ -103,6 +103,8 @@ def call(to, data, block="latest"):
 
 
 def decimals(token):
+    if int(token, 16) == 0:
+        return 18  # native ETH
     try:
         return int(call(token, "0x313ce567"), 16)
     except Exception:

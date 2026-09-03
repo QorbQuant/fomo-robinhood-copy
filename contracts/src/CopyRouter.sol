@@ -44,6 +44,11 @@ interface IPoolManager {
 /// pools included) with every call, so there is no owner-set config and any
 /// wallet can use it. The route is validated leg-by-leg for token continuity
 /// and minOut is enforced on the final output. Holds no balances between calls.
+///
+/// v2: V4 pools quoted in NATIVE ETH (currency address(0)) are supported. A leg
+/// that outputs ETH leaves it in this contract for the next leg, which settles
+/// it with msg.value. The first leg's input and the last leg's output must be
+/// ERC-20s (USDG on one side, the token on the other).
 contract CopyRouter {
     struct Leg {
         uint8 kind; // 0 = v3 path via SwapRouter02, 1 = v4 single pool
@@ -65,6 +70,8 @@ contract CopyRouter {
     error NotPoolManager();
     error Reentrancy();
     error NotOwner();
+
+    receive() external payable {} // ETH from PoolManager.take on native legs
 
     constructor(ISwapRouter02 swapRouter_, IPoolManager poolManager_) {
         swapRouter = swapRouter_;
@@ -89,18 +96,18 @@ contract CopyRouter {
         if (legsIn.length == 0) revert BadRoute();
         Leg[] memory legs = legsIn;
         address tokenIn = _legInput(legs[0]);
+        if (tokenIn == address(0)) revert BadRoute(); // must start from an ERC-20 (USDG)
         address expect = tokenIn;
         for (uint256 i = 0; i < legs.length; i++) {
             if (legs[i].kind > 1) revert BadRoute();
             if (_legInput(legs[i]) != expect) revert BadRoute();
             expect = _legOutput(legs[i]);
-            if (legs[i].kind == 1) {
-                if (legs[i].key.currency0 == address(0) || legs[i].key.currency1 == address(0)) revert BadRoute();
-            } else if (legs[i].v3Path.length < 43 || (legs[i].v3Path.length - 20) % 23 != 0) {
+            if (legs[i].kind == 0 && (legs[i].v3Path.length < 43 || (legs[i].v3Path.length - 20) % 23 != 0)) {
                 revert BadRoute();
             }
         }
         address tokenOut = expect;
+        if (tokenOut == address(0)) revert BadRoute(); // must end in an ERC-20
 
         require(IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn), "pull");
         amt = amountIn;
@@ -123,9 +130,14 @@ contract CopyRouter {
         require(IERC20(tokenOut).transfer(to, amt), "payout");
     }
 
-    /// Recover dust from partial fills or accidental transfers.
+    /// Recover dust from partial fills or accidental transfers (token 0 = ETH).
     function sweep(address token, address to) external {
         if (msg.sender != owner) revert NotOwner();
+        if (token == address(0)) {
+            (bool ok,) = to.call{value: address(this).balance}("");
+            require(ok, "sweep eth");
+            return;
+        }
         require(IERC20(token).transfer(to, IERC20(token).balanceOf(address(this))), "sweep");
     }
 
@@ -158,10 +170,15 @@ contract CopyRouter {
         uint256 owed = uint256(uint128(-inDelta));
         uint256 amountOut = uint256(uint128(outDelta));
 
-        poolManager.sync(currencyIn);
-        require(IERC20(currencyIn).transfer(address(poolManager), owed), "settle transfer");
-        poolManager.settle();
-        poolManager.take(currencyOut, address(this), amountOut);
+        if (currencyIn == address(0)) {
+            // native ETH held from the previous leg: settle with value, no sync
+            poolManager.settle{value: owed}();
+        } else {
+            poolManager.sync(currencyIn);
+            require(IERC20(currencyIn).transfer(address(poolManager), owed), "settle transfer");
+            poolManager.settle();
+        }
+        poolManager.take(currencyOut, address(this), amountOut); // native: ETH arrives via receive()
         return abi.encode(amountOut);
     }
 
