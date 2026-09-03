@@ -426,5 +426,9 @@
  {
   "address": "0x8966f1f3a016dab72087e4bd4ddde0b5f4b275a4",
   "label": "WaterySimpleBobolink"
+ },
+ {
+  "address": "0x1bcc5f67cd17e13770f199fa03bc043b0cde1143",
+  "label": "ogle"
  }
 ]
