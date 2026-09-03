@@ -24,7 +24,7 @@ from eth_abi import encode
 from eth_utils import keccak
 
 _HERE = Path(__file__).resolve().parent  # works in ~/Documents and in /opt on the droplet
-INSTANCES = {"LIVE": _HERE, "PAPER": _HERE.parent / "rh-copybot-paper"}
+INSTANCES = {"LIVE": _HERE, "PAPER": _HERE.parent / "rh-copybot-paper", "PAPER-B": _HERE.parent / "rh-copybot-paper2"}
 RPC = "https://rpc.mainnet.chain.robinhood.com"
 USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
 WETH = "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
@@ -443,7 +443,8 @@ def report_latency(inst, sigs, positions):
 
 def main():
     args = sys.argv[1:]
-    insts = ["PAPER"] if "--paper" in args else ["LIVE"] if "--live" in args else ["PAPER", "LIVE"]
+    insts = (["PAPER"] if "--paper" in args else ["PAPER-B"] if "--paper-b" in args else ["LIVE"] if "--live" in args
+             else ["PAPER", "PAPER-B", "LIVE"])
     hours = int(args[args.index("--hours") + 1]) if "--hours" in args else 2
     refresh = "--refresh" in args
     for inst in insts:

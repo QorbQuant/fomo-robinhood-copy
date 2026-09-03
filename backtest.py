@@ -70,7 +70,8 @@ def lab(m):
 def main():
     args = sys.argv[1:]
     hours = int(args[args.index("--hours") + 1]) if "--hours" in args else 24
-    insts = ["PAPER"] if "--paper" in args else ["LIVE"] if "--live" in args else ["PAPER", "LIVE"]
+    insts = (["PAPER"] if "--paper" in args else ["PAPER-B"] if "--paper-b" in args else ["LIVE"] if "--live" in args
+             else [i for i in ("PAPER", "PAPER-B", "LIVE") if stats.INSTANCES[i].exists()])
     allt = []
     for inst in insts:
         tr = load_trades(inst, hours)

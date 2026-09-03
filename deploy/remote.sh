@@ -13,11 +13,12 @@ case "${1:-}" in
   notify)    exec ssh -t "$HOST" 'systemctl enable --now rh-copybot-notify >/dev/null 2>&1; systemctl restart rh-copybot-notify; sleep 3; journalctl -u rh-copybot-notify -n 5 -o cat --no-pager' ;;
   notifylogs) exec ssh -t "$HOST" 'journalctl -fu rh-copybot-notify -o cat' ;;
   paperlogs) exec ssh -t "$HOST" 'journalctl -fu rh-copybot-paper -o cat' ;;
+  paper2logs) exec ssh -t "$HOST" 'journalctl -fu rh-copybot-paper2 -o cat' ;;
   dash)      exec ssh -t "$HOST" 'cd /opt/rh-copybot && .venv/bin/python dash.py' ;;
   status)    exec ssh "$HOST" 'cd /opt/rh-copybot && .venv/bin/python bot.py status' ;;
   stats)     exec ssh "$HOST" 'cd /opt/rh-copybot && .venv/bin/python stats.py' ;;
-  restart)   exec ssh "$HOST" 'systemctl restart rh-copybot rh-copybot-paper && sleep 3 && systemctl is-active rh-copybot rh-copybot-paper' ;;
-  push)      ./deploy/push.sh "$HOST" && ssh "$HOST" 'systemctl restart rh-copybot rh-copybot-paper && sleep 3 && systemctl is-active rh-copybot rh-copybot-paper' ;;
+  restart)   exec ssh "$HOST" 'systemctl restart rh-copybot rh-copybot-paper rh-copybot-paper2 2>/dev/null; sleep 3; systemctl is-active rh-copybot rh-copybot-paper rh-copybot-paper2' ;;
+  push)      ./deploy/push.sh "$HOST" && ssh "$HOST" 'systemctl restart rh-copybot rh-copybot-paper rh-copybot-paper2 2>/dev/null; sleep 3; systemctl is-active rh-copybot rh-copybot-paper rh-copybot-paper2' ;;
   sell)      exec ssh -t "$HOST" "cd /opt/rh-copybot && .venv/bin/python bot.py sell ${2:?symbol} ${3:-100}" ;;
   adopt)     exec ssh "$HOST" "cd /opt/rh-copybot && .venv/bin/python bot.py adopt ${2:?token} ${3:?usd} ${4:-}" ;;
   *) sed -n 2,9p "$0" ;;

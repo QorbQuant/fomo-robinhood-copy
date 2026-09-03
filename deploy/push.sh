@@ -20,6 +20,11 @@ ssh "$HOST" 'mkdir -p /opt/rh-copybot /opt/rh-copybot-paper'
 rsync -az --delete --exclude .venv --exclude __pycache__ --exclude contracts/out --exclude contracts/cache \
   --exclude data/pricepaths "$HERE/" "$HOST:/opt/rh-copybot/"
 rsync -az --exclude __pycache__ --exclude wallets.json "$PAPER/" "$HOST:/opt/rh-copybot-paper/"
+PAPER2="$HERE/../rh-copybot-paper2"
+if [ -d "$PAPER2" ]; then
+  ssh "$HOST" 'mkdir -p /opt/rh-copybot-paper2'
+  rsync -az --exclude __pycache__ "$PAPER2/" "$HOST:/opt/rh-copybot-paper2/"
+fi
 ssh "$HOST" 'chmod +x /opt/rh-copybot/deploy/setup.sh && /opt/rh-copybot/deploy/setup.sh'
 echo
 echo "next:  ssh $HOST 'systemctl restart rh-copybot rh-copybot-paper && journalctl -fu rh-copybot'"

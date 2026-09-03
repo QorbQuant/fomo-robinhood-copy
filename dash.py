@@ -24,6 +24,7 @@ _HERE = Path(__file__).resolve().parent  # works in ~/Documents and in /opt on t
 INSTANCES = [
     ("LIVE", _HERE),
     ("PAPER", _HERE.parent / "rh-copybot-paper"),
+    ("PAPER-B", _HERE.parent / "rh-copybot-paper2"),  # separate wallet cohort; skipped if absent
 ]
 USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
 RPC = "https://rpc.mainnet.chain.robinhood.com"
