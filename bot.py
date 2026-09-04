@@ -1167,7 +1167,11 @@ def sell(pos, raw, why):
     if raw <= 0:
         return True
     legs, quote = best_sell_legs(pos, raw)
-    min_out = int(quote * (1 - CFG.get("sell_slippage_pct", 6) / 100))
+    base = CFG.get("sell_slippage_pct", 6) / 100
+    bound = min(base * 1.5 ** pos.get("sell_failures", 0), CFG.get("sell_slippage_max_pct", 25) / 100)
+    if pos.get("sell_failures"):
+        log(f"  [sell] {pos['symbol']}: widening slippage bound to {bound:.0%} after {pos['sell_failures']} failure(s)")
+    min_out = int(quote * (1 - bound))
     if CFG["live"]:
         ensure_allowance(tok, raw)
         try:
@@ -1380,6 +1384,27 @@ def find_unrecorded_sale(pos, known_txs):
     return None
 
 
+def write_off_if_dead(pos, now):
+    """A pool whose liquidity was pulled quotes nothing forever. Once the token
+    has shown zero liquidity for 30+ minutes and the bag is unsellable, close it
+    as a loss so the exit loop stops retrying it every hour."""
+    try:
+        info = token_info(pos["token"], fresh=True)
+    except Exception:
+        return False
+    if (info.get("liquidity") or 0) > 0:
+        return False
+    pos["dead_since"] = pos.get("dead_since") or now
+    if now - pos["dead_since"] < 1800:
+        return False
+    pos.update(closed_at=now, pnl_usd=pos["usdg_out"] - pos["buy_usd"], note="pool drained (rugged); written off")
+    STATE["closed"].append(pos)
+    STATE["positions"].pop(pos["token"], None)
+    save_state()
+    log(f"  [closed] {pos['symbol']}: pool drained, no liquidity left — written off at {fmt_usd(pos['pnl_usd'])}")
+    return True
+
+
 def close_if_done(pos, now):
     """Move a position to closed once nothing is left to sell (all tranches
     done, rounding dust, or sold out via origin exit / dashboard)."""
@@ -1498,8 +1523,14 @@ def run_exits():
             continue
         except Exception as e:
             pos["sell_failures"] = pos.get("sell_failures", 0) + 1
-            if ("slippage" in str(e) or "reverted" in str(e)) and pos["sell_failures"] <= 3:
-                wait = 5  # price moved between quote and inclusion: re-quote almost immediately
+            msg = str(e)
+            if "slippage" in msg or "reverted" in msg:
+                # price moving fast: re-quote quickly with a wider bound (see sell()); never park a live position
+                wait = 5 if pos["sell_failures"] <= 3 else 60
+            elif "no sell route" in msg or "quote reverted" in msg:
+                if write_off_if_dead(pos, now):
+                    continue
+                wait = min(CFG.get("sell_retry_seconds", 300) * 2 ** (pos["sell_failures"] - 1), 3600)
             else:
                 wait = min(CFG.get("sell_retry_seconds", 300) * 2 ** (pos["sell_failures"] - 1), 3600)
             pos["retry_after"] = now + wait
