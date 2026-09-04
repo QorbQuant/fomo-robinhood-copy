@@ -638,6 +638,13 @@ def prefix_to(target, eth_price):
         uw = usdg_weth_fee()
         return ([{"kind": 0, "path": encode_path(USDG, uw, WETH)}, {"kind": 1, "key": w["key"], "zf": not w["zf"]}],
                 [{"kind": 1, "key": w["key"], "zf": w["zf"]}, {"kind": 0, "path": encode_path(WETH, uw, USDG)}])
+    # the intermediate itself only trades against native ETH: USDG -> ETH -> target
+    n = v4_direct(target, ZERO) if native_ok() else None
+    if n and n["liq"] >= 1000:
+        np = native_prefix()
+        if np:
+            return (np[0] + [{"kind": 1, "key": n["key"], "zf": not n["zf"]}],
+                    [{"kind": 1, "key": n["key"], "zf": n["zf"]}] + np[1])
     return None
 
 

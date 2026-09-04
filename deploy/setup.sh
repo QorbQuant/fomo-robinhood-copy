@@ -3,10 +3,18 @@
 # Installs Python deps into a venv and registers both bots as systemd services.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-apt-get update -qq && apt-get install -y -qq python3-venv python3-pip rsync >/dev/null
-[ -d .venv ] || python3 -m venv .venv
-.venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -r requirements.txt
+# Package installs are expensive on a 512MB box (an apt-get run got OOM-killed
+# with four bots resident): only touch apt/pip when actually needed.
+if [ ! -d .venv ]; then
+  apt-get update -qq && apt-get install -y -qq python3-venv python3-pip rsync >/dev/null
+  python3 -m venv .venv
+  .venv/bin/pip install -q --upgrade pip
+fi
+if [ ! -f .venv/.requirements.sha ] || ! sha256sum -c --quiet .venv/.requirements.sha 2>/dev/null; then
+  .venv/bin/pip install -q -r requirements.txt && sha256sum requirements.txt > .venv/.requirements.sha
+else
+  echo "requirements unchanged; skipping pip"
+fi
 mkdir -p data ../rh-copybot-paper/data
 [ -e ../rh-copybot-paper/wallets.json ] || ln -s ../rh-copybot/wallets.json ../rh-copybot-paper/wallets.json
 install -m 644 deploy/rh-copybot.service /etc/systemd/system/rh-copybot.service
