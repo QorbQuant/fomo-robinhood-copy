@@ -53,6 +53,10 @@ def read_env():
 ENV = read_env()
 TOKEN = ENV.get("TELEGRAM_BOT_TOKEN", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
+# Small VPSes often have half-working IPv6; Telegram resolves to v6 first and
+# requests hang. Force IPv4 for everything this process does.
+import urllib3.util.connection as _conn  # noqa: E402
+_conn.HAS_IPV6 = False
 _s = requests.Session()
 
 
@@ -82,16 +86,21 @@ def send(chat_id, text, pre=False):
         text = text[3900:]
     for c in chunks:
         body = f"<pre>{html.escape(c)}</pre>" if pre else html.escape(c)
-        for attempt in range(3):
+        for attempt in range(6):
             try:
                 r = _s.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": body, "parse_mode": "HTML",
                                                        "disable_web_page_preview": True}, timeout=15)
                 if r.status_code == 429:
                     time.sleep(int(r.headers.get("Retry-After", "2")))
                     continue
+                if r.status_code != 200:
+                    log(f"send failed: http {r.status_code} {r.text[:120]}")
                 break
-            except requests.RequestException:
-                time.sleep(2)
+            except requests.RequestException as e:
+                log(f"send attempt {attempt + 1} failed: {str(e)[:100]}")
+                time.sleep(2 * (attempt + 1))
+        else:
+            log("send GAVE UP after 6 attempts; message dropped")
 
 
 def updates(offset):
