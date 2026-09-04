@@ -1750,7 +1750,18 @@ def cmd_run():
             log("websocket detection requested but no wss URL (set WS_URL or use an Alchemy RPC_URL); polling")
     last_sweep = time.time()
     last_exits = 0.0
+    last_beat = time.time()
     while True:
+        # heartbeat: proves the loop is alive and shows how far behind the chain we are
+        if time.time() - last_beat >= CFG.get("heartbeat_seconds", 120):
+            last_beat = time.time()
+            try:
+                head = int(rpc("eth_blockNumber", []), 16)
+                mode = "ws" if (feed is not None and feed.healthy()) else ("alchemy" if rpc_url() == RPC_URL else "public-rpc")
+                log(f"  [beat] {head - STATE['last_block']} blocks behind head via {mode}; "
+                    f"{len(STATE['positions'])} open; {'gas %.4f ETH' % gas_eth() if CFG['live'] else 'paper'}")
+            except Exception as e:
+                log(f"  [beat] head check failed: {str(e)[:80]}")
         try:
             if feed is not None and feed.healthy():
                 # fast path: events straight off the socket, grouped per tx
@@ -1777,7 +1788,7 @@ def cmd_run():
                     process_commands()
                     run_exits()
                 continue
-            time.sleep(poll if rpc_url() == RPC_URL else max(poll, 2.0))
+            time.sleep(poll if rpc_url() == RPC_URL else max(poll, CFG.get("fallback_poll_seconds", 3.0)))
             last = poll_once(STATE["last_block"])
             process_commands()
             run_exits()

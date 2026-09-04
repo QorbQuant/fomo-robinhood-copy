@@ -28,7 +28,7 @@
   "skip_stock_tokens": true,
   "_note": "skip_stock_tokens drops every '... \u2022 Robinhood Token' (tokenized stocks/ETFs). stablecoins are never copied. exclude_tokens = extra symbols/addresses to ignore.",
   "log_chunk_blocks": 10,
-  "max_catchup_blocks": 600,
+  "max_catchup_blocks": 3000,
   "fallback_rpc": "https://rpc.mainnet.chain.robinhood.com",
   "max_round_trip_loss_pct": 15,
   "thin_liquidity_usd": 50000,
@@ -40,5 +40,7 @@
   "ws": false,
   "ws_backstop_seconds": 20,
   "ws_stale_seconds": 90,
-  "native_eth_routes": true
+  "native_eth_routes": true,
+  "fallback_poll_seconds": 3,
+  "log_chunk_blocks_open": 300
 }
