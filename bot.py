@@ -981,16 +981,19 @@ def _is_dead(pos):
 
 
 def wallet_quarantine(wallet):
-    """A wallet whose recent buys keep turning into rugs (unipcs: 8 of 12) is either
-    sniping launches blindly or being used as bait. Pause copying it while its recent
-    record stays that bad; it un-quarantines itself as the window rolls on."""
+    """Every rug so far was a YOUNG-pool buy (<60 min); the same wallets' buys of
+    established tokens have a 0% rug rate and make money. So a wallet with a bad
+    launch-sniping record only has its young-pool signals held back — its mature-token
+    signals keep flowing. Self-clearing as the 48h window rolls on."""
     hours = CFG.get("quarantine_window_hours", 48)
+    young_max = CFG.get("young_pool_minutes", 60)
     cutoff = time.time() - hours * 3600
     recent = [p for p in list(STATE["positions"].values()) + STATE["closed"]
-              if p.get("origin") == wallet and p["bought_at"] >= cutoff]
+              if p.get("origin") == wallet and p["bought_at"] >= cutoff
+              and (p.get("pool_age_min") is None or p["pool_age_min"] < young_max)]  # unknown age: assume young
     rugs = sum(1 for p in recent if _is_dead(p))
     if rugs >= CFG.get("quarantine_min_rugs", 3) and rugs / len(recent) >= CFG.get("quarantine_rug_rate", 0.5):
-        return f"{rugs} of its last {len(recent)} copied buys rugged"
+        return f"{rugs} of its last {len(recent)} young-pool buys rugged"
     return None
 
 
@@ -1025,9 +1028,7 @@ def handle_buy_signal(ev, tok, raw):
 
     if open_position(tok):
         return skip("already holding", quiet=True)
-    q = wallet_quarantine(ev["wallet"])
-    if q:
-        return skip(f"origin wallet quarantined: {q}")
+    q_reason = wallet_quarantine(ev["wallet"])  # applied below, only to young-pool signals
     excl = {x.lower() for x in CFG.get("exclude_tokens", [])}
     if tok in excl or meta["symbol"].lower() in excl:
         return skip("excluded by config", quiet=True)
@@ -1083,6 +1084,8 @@ def handle_buy_signal(ev, tok, raw):
     age = pair_age_minutes(info)
     if age is not None and age < CFG.get("min_pool_age_minutes", 5):
         return skip(f"pool only {age:.1f} min old (rug window)")
+    if q_reason and (age is None or age < CFG.get("young_pool_minutes", 60)):
+        return skip(f"young pool + origin wallet's snipes quarantined: {q_reason}")
     # fake-LP rugs (PLUMBER, 富贵, BTC): a minutes-old pool showing $0.9-1.6M of "liquidity"
     # with 1-21 buys and ~0 sells. Real launches don't look like that.
     if age is not None and age < CFG.get("fresh_pool_minutes", 30) and \
@@ -1153,7 +1156,7 @@ def handle_buy_signal(ev, tok, raw):
            "initial_raw": got, "remaining_raw": got, "legs_sell": legs_sell, "route": desc,
            "stages_done": [], "origin_exiting": False, "origin_done": False,
            "usdg_out": 0.0, "sells": [], "retry_after": 0, "paper": not CFG["live"],
-           "signal_age_s": sig["signal_age_s"], "latency": None}
+           "signal_age_s": sig["signal_age_s"], "latency": None, "pool_age_min": age}
     STATE["positions"][tok] = pos
     save_state()
 
