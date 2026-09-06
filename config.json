@@ -42,5 +42,8 @@
   "ws_stale_seconds": 90,
   "native_eth_routes": true,
   "fallback_poll_seconds": 3,
-  "log_chunk_blocks_open": 300
+  "log_chunk_blocks_open": 300,
+  "ratio_gate_min_buys": 30,
+  "ratio_gate_min_sell_ratio": 0.15,
+  "blocked_write_off_hours": 6
 }

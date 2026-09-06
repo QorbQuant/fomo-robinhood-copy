@@ -137,6 +137,8 @@ def snapshot():
             price = px.get(pos["token"].lower())
             unknown = held > 0 and price is None
             value = held * (price or 0)
+            if pos.get("blocked_since"):
+                value = 0.0  # a price nobody can sell at is not a mark
             pnl = value + pos["usdg_out"] - pos["buy_usd"]
             if not unknown:
                 unreal += pnl
@@ -149,7 +151,8 @@ def snapshot():
                          "from": pos["origin_label"], "token": pos["token"],
                          "unknown": unknown,
                          "flag": "sell requested" if pending else
-                                 ("SELL-SIM-FAILED" if pos.get("sell_simulated") is False else
+                                 ("BLOCKED (honeypot)" if pos.get("blocked_since") else
+                                  "SELL-SIM-FAILED" if pos.get("sell_simulated") is False else
                                   ("retrying sell" if pos.get("retry_after", 0) > time.time() else
                                    ("no price" if unknown else "")))})
         closed = st["closed"]

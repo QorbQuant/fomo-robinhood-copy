@@ -405,6 +405,14 @@ def dex_pairs(token, label):
     return out
 
 
+def pair_age_minutes(info):
+    try:
+        created = max((p.get("pairCreatedAt") or 0) for p in info.get("pairs") or [])
+        return round((time.time() - created / 1000) / 60, 1) if created else None
+    except Exception:
+        return None
+
+
 def honeypot_reason(info):
     b, s = info.get("buys24", 0), info.get("sells24", 0)
     if b >= 10 and s == 0:
@@ -1022,10 +1030,17 @@ def handle_buy_signal(ev, tok, raw):
         return skip(f"origin buy only {fmt_usd(origin_usd)}")
     if info["liquidity"] < CFG.get("min_liquidity_usd", 0):
         return skip(f"liquidity {fmt_usd(info['liquidity'])} below min")
+    sig.update(buys24=info["buys24"], sells24=info["sells24"], liquidity=round(info["liquidity"]),
+               pair_age_min=pair_age_minutes(info))
     if CFG.get("honeypot_check", True):
         hp = honeypot_reason(info)
         if hp:
             return skip(hp)
+        # a token many people buy but almost nobody sells is a honeypot in progress
+        # (PEZ family: 150-200 buys vs 4-18 sells while legit tokens run ~80-120%)
+        if info["buys24"] >= CFG.get("ratio_gate_min_buys", 30) and \
+                info["sells24"] / info["buys24"] < CFG.get("ratio_gate_min_sell_ratio", 0.15):
+            return skip(f"only {info['sells24']} sells vs {info['buys24']} buys (honeypot pattern)")
     if info["liquidity"] < CFG.get("thin_liquidity_usd", 50000):
         # small pool: insist that OTHER people have actually sold recently
         need = CFG.get("thin_min_sells_24h", 5)
@@ -1527,6 +1542,15 @@ def run_exits():
             low = msg.lower()
             if any(k in low for k in ("blocked", "cannot sell", "blacklist", "not allowed", "trading not", "paused")):
                 # the TOKEN refuses the transfer: a honeypot switch. Alert once, retry rarely.
+                pos["blocked_since"] = pos.get("blocked_since") or now
+                if now - pos["blocked_since"] > CFG.get("blocked_write_off_hours", 6) * 3600:
+                    pos.update(closed_at=now, pnl_usd=pos["usdg_out"] - pos["buy_usd"],
+                               note="honeypot: token blocks selling; written off")
+                    STATE["closed"].append(pos)
+                    STATE["positions"].pop(tok, None)
+                    save_state()
+                    log(f"  [closed] {pos['symbol']}: sells blocked for 6h — written off at {fmt_usd(pos['pnl_usd'])}")
+                    continue
                 if not pos.get("blocked_alerted"):
                     pos["blocked_alerted"] = True
                     log(f"  [ALERT] {pos['symbol']}: the token contract blocks selling ({msg.split('reverted:')[-1].strip()[:40]!r}). "
