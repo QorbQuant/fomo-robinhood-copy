@@ -1392,7 +1392,7 @@ def write_off_if_dead(pos, now):
         info = token_info(pos["token"], fresh=True)
     except Exception:
         return False
-    if (info.get("liquidity") or 0) > 0:
+    if (info.get("liquidity") or 0) >= CFG.get("dead_pool_liquidity_usd", 100):
         return False
     pos["dead_since"] = pos.get("dead_since") or now
     if now - pos["dead_since"] < 1800:
@@ -1524,10 +1524,20 @@ def run_exits():
         except Exception as e:
             pos["sell_failures"] = pos.get("sell_failures", 0) + 1
             msg = str(e)
-            if "slippage" in msg or "reverted" in msg:
+            low = msg.lower()
+            if any(k in low for k in ("blocked", "cannot sell", "blacklist", "not allowed", "trading not", "paused")):
+                # the TOKEN refuses the transfer: a honeypot switch. Alert once, retry rarely.
+                if not pos.get("blocked_alerted"):
+                    pos["blocked_alerted"] = True
+                    log(f"  [ALERT] {pos['symbol']}: the token contract blocks selling ({msg.split('reverted:')[-1].strip()[:40]!r}). "
+                        f"This is a honeypot; retrying every 15 min and writing off once the pool is drained.")
+                if write_off_if_dead(pos, now):
+                    continue
+                wait = 900
+            elif "slippage" in low or "reverted" in low:
                 # price moving fast: re-quote quickly with a wider bound (see sell()); never park a live position
                 wait = 5 if pos["sell_failures"] <= 3 else 60
-            elif "no sell route" in msg or "quote reverted" in msg:
+            elif "no sell route" in low or "quote reverted" in low:
                 if write_off_if_dead(pos, now):
                     continue
                 wait = min(CFG.get("sell_retry_seconds", 300) * 2 ** (pos["sell_failures"] - 1), 3600)
@@ -1535,7 +1545,8 @@ def run_exits():
                 wait = min(CFG.get("sell_retry_seconds", 300) * 2 ** (pos["sell_failures"] - 1), 3600)
             pos["retry_after"] = now + wait
             save_state()
-            log(f"  [warn] sell {pos['symbol']} failed ({pos['sell_failures']}x), retry in {wait // 60}m: {str(e)[:160]}")
+            if wait < 900:
+                log(f"  [warn] sell {pos['symbol']} failed ({pos['sell_failures']}x), retry in {wait // 60}m: {str(e)[:160]}")
             continue
         close_if_done(pos, now)
 
