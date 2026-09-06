@@ -1014,6 +1014,16 @@ def handle_buy_signal(ev, tok, raw):
         prev = 0  # can't read history: assume new (open-position dedupe still applies)
     if prev > 0:
         return skip(f"wallet already held {prev / 10**meta['decimals']:,.4g}")
+    # who paid? A real fomo fill is paid in USDG by fomo's payer through fomo's router and
+    # carries no ETH. Honeypot operators "buy" their own token INTO famous wallets with
+    # ETH (the ETH lands in their own pool, so it costs nothing) to bait copy traders.
+    try:
+        otx = rpc("eth_getTransactionByHash", [ev["tx"]])
+        sig.update(origin_to=(otx.get("to") or "")[:12], origin_eth=round(int(otx["value"], 16) / 1e18, 4))
+        if int(otx["value"], 16) > 0 and CFG.get("plant_gate", True):
+            return skip(f"planted: ETH-paid buy ({sig['origin_eth']} ETH attached), not a fomo fill")
+    except Exception as e:
+        log(f"  [warn] origin tx check failed for {meta['symbol']}: {str(e)[:80]}")
     t_origin = block_time(ev["block"])
     age = t_detect - t_origin
     sig["signal_age_s"] = round(age, 2)
