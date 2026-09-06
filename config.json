@@ -54,5 +54,8 @@
   "young_pool_minutes": 60,
   "young_pool_min_sell_ratio": 0.25,
   "unsellable_failures": 12,
-  "unsellable_hours": 3
+  "unsellable_hours": 3,
+  "quarantine_window_hours": 48,
+  "quarantine_min_rugs": 3,
+  "quarantine_rug_rate": 0.5
 }

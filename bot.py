@@ -974,6 +974,26 @@ def gas_eth(fresh=False):
     return eth
 
 
+def _is_dead(pos):
+    note = pos.get("note") or ""
+    return ("drained" in note or "honeypot" in note or "unsellable" in note
+            or bool(pos.get("blocked_since")) or pos.get("sell_failures", 0) >= 3)
+
+
+def wallet_quarantine(wallet):
+    """A wallet whose recent buys keep turning into rugs (unipcs: 8 of 12) is either
+    sniping launches blindly or being used as bait. Pause copying it while its recent
+    record stays that bad; it un-quarantines itself as the window rolls on."""
+    hours = CFG.get("quarantine_window_hours", 48)
+    cutoff = time.time() - hours * 3600
+    recent = [p for p in list(STATE["positions"].values()) + STATE["closed"]
+              if p.get("origin") == wallet and p["bought_at"] >= cutoff]
+    rugs = sum(1 for p in recent if _is_dead(p))
+    if rugs >= CFG.get("quarantine_min_rugs", 3) and rugs / len(recent) >= CFG.get("quarantine_rug_rate", 0.5):
+        return f"{rugs} of its last {len(recent)} copied buys rugged"
+    return None
+
+
 def paper_cash():
     if "paper_cash" not in STATE:
         STATE["paper_cash"] = float(CFG.get("paper_cash_usd", 0))
@@ -1005,6 +1025,9 @@ def handle_buy_signal(ev, tok, raw):
 
     if open_position(tok):
         return skip("already holding", quiet=True)
+    q = wallet_quarantine(ev["wallet"])
+    if q:
+        return skip(f"origin wallet quarantined: {q}")
     excl = {x.lower() for x in CFG.get("exclude_tokens", [])}
     if tok in excl or meta["symbol"].lower() in excl:
         return skip("excluded by config", quiet=True)
