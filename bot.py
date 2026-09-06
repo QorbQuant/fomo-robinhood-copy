@@ -1540,6 +1540,21 @@ def run_exits():
             pos["sell_failures"] = pos.get("sell_failures", 0) + 1
             msg = str(e)
             low = msg.lower()
+            # a remainder worth less than the gas it takes to keep trying: write it off
+            if pos["sell_failures"] >= 5:
+                try:
+                    mark = pos["remaining_raw"] / 10**pos["decimals"] * (token_info(tok)["price"] or 0)
+                except Exception:
+                    mark = None
+                if mark is not None and mark < CFG.get("dust_write_off_usd", 10):
+                    pos.update(closed_at=now, pnl_usd=pos["usdg_out"] - pos["buy_usd"],
+                               note=f"unsellable remainder worth ~${mark:.2f}; written off")
+                    STATE["closed"].append(pos)
+                    STATE["positions"].pop(tok, None)
+                    save_state()
+                    log(f"  [closed] {pos['symbol']}: unsellable remainder worth ~{fmt_usd(mark)} after "
+                        f"{pos['sell_failures']} failures — written off at {fmt_usd(pos['pnl_usd'])}")
+                    continue
             if any(k in low for k in ("blocked", "cannot sell", "blacklist", "not allowed", "trading not", "paused")):
                 # the TOKEN refuses the transfer: a honeypot switch. Alert once, retry rarely.
                 pos["blocked_since"] = pos.get("blocked_since") or now
