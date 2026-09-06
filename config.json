@@ -46,5 +46,6 @@
   "ratio_gate_min_buys": 30,
   "ratio_gate_min_sell_ratio": 0.15,
   "blocked_write_off_hours": 6,
-  "plant_gate": true
+  "plant_gate": true,
+  "require_fomo_payer": false
 }

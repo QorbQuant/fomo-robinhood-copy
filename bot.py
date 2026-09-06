@@ -282,9 +282,13 @@ _code_cache = {}
 
 
 def is_contract(a):
+    """True for real contracts (pools, routers). EIP-7702 delegated accounts —
+    every fomo wallet — carry code too but are people; a token sent from one of
+    them is a transfer or a gift, never a fill, so they count as EOAs here."""
     a = a.lower()
     if a not in _code_cache:
-        _code_cache[a] = rpc("eth_getCode", [a, "latest"]) not in ("0x", None)
+        code = rpc("eth_getCode", [a, "latest"]) or "0x"
+        _code_cache[a] = code != "0x" and not code.startswith("0xef0100")
     return _code_cache[a]
 
 
@@ -1022,6 +1026,17 @@ def handle_buy_signal(ev, tok, raw):
         sig.update(origin_to=(otx.get("to") or "")[:12], origin_eth=round(int(otx["value"], 16) / 1e18, 4))
         if int(otx["value"], 16) > 0 and CFG.get("plant_gate", True):
             return skip(f"planted: ETH-paid buy ({sig['origin_eth']} ETH attached), not a fomo fill")
+        if CFG.get("require_fomo_payer", False):
+            # strict: the buy must be fomo's own fill (router + USDG payer). Costs ~6% of real
+            # signals that arrive via other routers; off by default.
+            rec = rpc("eth_getTransactionReceipt", [ev["tx"]])
+            payers = {"0x" + l["topics"][1][-40:] for l in rec["logs"]
+                      if l["address"].lower() == USDG.lower() and len(l["topics"]) == 3 and l["topics"][0] == TRANSFER_TOPIC}
+            fomo = (otx.get("to") or "").lower().startswith(CFG.get("fomo_router_prefix", "0xccc88a9d")) and \
+                any(x.startswith(CFG.get("fomo_payer_prefix", "0xf70da978")) for x in payers)
+            sig["fomo_fill"] = fomo
+            if not fomo:
+                return skip("not a fomo-paid fill (strict mode)")
     except Exception as e:
         log(f"  [warn] origin tx check failed for {meta['symbol']}: {str(e)[:80]}")
     t_origin = block_time(ev["block"])
