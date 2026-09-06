@@ -1055,6 +1055,11 @@ def handle_buy_signal(ev, tok, raw):
         return skip(f"origin buy only {fmt_usd(origin_usd)}")
     if info["liquidity"] < CFG.get("min_liquidity_usd", 0):
         return skip(f"liquidity {fmt_usd(info['liquidity'])} below min")
+    # pools 2-5 minutes old rugged 31% of the time (11 of 35 trades, net -$708); from 5 minutes
+    # on the rug rate falls to 14% and then ~0%, and that is where the profit lives (+$1.4K at 5-15)
+    age = pair_age_minutes(info)
+    if age is not None and age < CFG.get("min_pool_age_minutes", 5):
+        return skip(f"pool only {age:.1f} min old (rug window)")
     sig.update(buys24=info["buys24"], sells24=info["sells24"], liquidity=round(info["liquidity"]),
                pair_age_min=pair_age_minutes(info))
     if CFG.get("honeypot_check", True):
