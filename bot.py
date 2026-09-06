@@ -1060,6 +1060,14 @@ def handle_buy_signal(ev, tok, raw):
     age = pair_age_minutes(info)
     if age is not None and age < CFG.get("min_pool_age_minutes", 5):
         return skip(f"pool only {age:.1f} min old (rug window)")
+    # fake-LP rugs (PLUMBER, 富贵, BTC): a minutes-old pool showing $0.9-1.6M of "liquidity"
+    # with 1-21 buys and ~0 sells. Real launches don't look like that.
+    if age is not None and age < CFG.get("fresh_pool_minutes", 30) and \
+            info["liquidity"] > CFG.get("fresh_pool_max_liquidity_usd", 500000):
+        return skip(f"pool {age:.0f} min old already showing {fmt_usd(info['liquidity'])} liquidity (fake LP pattern)")
+    if age is not None and age < CFG.get("young_pool_minutes", 60) and info["buys24"] >= 5 and \
+            info["sells24"] / info["buys24"] < CFG.get("young_pool_min_sell_ratio", 0.25):
+        return skip(f"young pool with {info['sells24']} sells vs {info['buys24']} buys")
     sig.update(buys24=info["buys24"], sells24=info["sells24"], liquidity=round(info["liquidity"]),
                pair_age_min=pair_age_minutes(info))
     if CFG.get("honeypot_check", True):
@@ -1570,6 +1578,16 @@ def run_exits():
             pos["sell_failures"] = pos.get("sell_failures", 0) + 1
             msg = str(e)
             low = msg.lower()
+            # sells that have failed for hours regardless of reason: the bag is not coming back
+            if pos["sell_failures"] >= CFG.get("unsellable_failures", 12) and \
+                    now - pos["bought_at"] > CFG.get("unsellable_hours", 3) * 3600:
+                pos.update(closed_at=now, pnl_usd=pos["usdg_out"] - pos["buy_usd"],
+                           note=f"unsellable after {pos['sell_failures']} attempts over {(now - pos['bought_at']) / 3600:.0f}h; written off")
+                STATE["closed"].append(pos)
+                STATE["positions"].pop(tok, None)
+                save_state()
+                log(f"  [closed] {pos['symbol']}: unsellable after {pos['sell_failures']} attempts — written off at {fmt_usd(pos['pnl_usd'])}")
+                continue
             # a remainder worth less than the gas it takes to keep trying: write it off
             if pos["sell_failures"] >= 5:
                 try:
