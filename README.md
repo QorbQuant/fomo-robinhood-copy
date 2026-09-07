@@ -71,6 +71,10 @@ rebuilt from pool swap events), follower flow among watched wallets, wallet lead
 | `holder_probe_min_trapped` | 2 | skip when this many probed holders are blocked (or one is and none is free) |
 | `holder_probe_wait_s` | 1.0 | how long to wait for the probe after routing before buying without it |
 | `bytecode_blocklist` | [0x109b1bd8…] | skip tokens whose bytecode carries one of these constants (the PEZ/MEGADUCK honeypot build) |
+| `relay_gate` | true | ask Relay who paid for the origin buy; skip when a stranger who buys into other tracked wallets did (see below) |
+| `relay_wait_s` / `relay_watch_s` | 2.5 / 180 | how long to wait for Relay before buying, and for how long after a fill an unknown payer is re-checked |
+| `relay_min_funded` | 2 | a payer becomes a "stranger" once it has bought into this many tracked wallets |
+| `relay_unknown` | buy | `buy` or `skip` when Relay has not named the payer in time |
 
 ## What counts as a signal
 
@@ -99,6 +103,25 @@ bare custom error, the token simply forbids direct transfers (a token-wide rule,
 through the router still work) and the probe stays quiet. It runs in a thread alongside
 route discovery, so it adds no latency. `python bot.py route <token>` prints the verdict.
 
+
+## Planted buys and the Relay payer check
+
+fomo funds its Robinhood Chain wallets through Relay (relay.link). A fomo buy is a Relay
+request "take my USDC on Solana, deliver token X to my wallet"; Relay's solver keys submit
+it and Relay's router settles it. Relay lets any user name any recipient, so a scammer can
+buy their own coin *into* a famous wallet, and the transaction is byte-identical to the
+whale buying it (MEGADUCK into runitbackghost was paid by an outside Solana wallet that
+planted into 16 of our wallets; PEZ into unipcs was paid by PEZ's own deployer). Relay's
+public index names the payer, so the bot asks it in a thread next to routing: the
+trader's own paired Solana wallet (`solana.json`, from the scanner's traders.json) or the
+EVM wallet itself means genuine; a payer that also buys into other tracked wallets means
+planted and the signal is skipped. Relay does not always answer within the buy window, so
+an unknown payer is bought and re-checked for three minutes after the fill; if it turns
+out to be a stranger the whole position is sold at once, while the blacklister has not
+reached us yet. `python bot.py payer <txhash>` prints the verdict for any fill. The old
+`require_fomo_payer` option is meaningless (that "payer" is Relay's solver).
+
+## Files
 
 - `bot.py` — everything: watcher, routing, execution, exits, CLI
 - `contracts/src/CopyRouter.sol` — stateless swap executor (route passed per call)
