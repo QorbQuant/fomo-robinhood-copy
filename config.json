@@ -72,5 +72,6 @@
   "relay_wait_s": 2.5,
   "relay_watch_s": 180,
   "relay_min_funded": 2,
-  "relay_unknown": "buy"
+  "relay_unknown": "buy",
+  "requote_on_slippage": true
 }

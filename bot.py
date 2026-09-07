@@ -1446,7 +1446,22 @@ def handle_buy_signal(ev, tok, raw):
         try:
             rec = swap_tx(legs_buy, amount_in, min_out)
         except Exception as e:
-            return skip(f"buy tx failed: {e}")
+            # a fast-moving pool (StockCat: $2.9K origin buy into $39K of liquidity) can move
+            # past our 3% bound between the quote and the send. Re-quote once and retry,
+            # as long as the price is still within the impact cap of the signal-time quote.
+            if "slippage" not in str(e).lower() or not CFG.get("requote_on_slippage", True):
+                return skip(f"buy tx failed: {e}")
+            try:
+                quote2 = quote_route(legs_buy, amount_in)
+                moved = quote / quote2 - 1  # how much dearer the token got since the first quote
+                if moved > CFG.get("max_price_impact_pct", 10) / 100:
+                    return skip(f"buy tx failed: slippage, and a re-quote is {moved:+.1%} dearer than the signal-time quote")
+                min_out = int(quote2 * (1 - SLIPPAGE))
+                log(f"  [buy] {meta['symbol']}: slippage on the first send, re-quoted {moved:+.1%} and retrying")
+                rec = swap_tx(legs_buy, amount_in, min_out)
+                sig["requoted"] = round(moved, 4)
+            except Exception as e2:
+                return skip(f"buy tx failed after re-quote: {e2}")
         got = received(rec, tok)
         tx_hash = rec["transactionHash"]
     else:

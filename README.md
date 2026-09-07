@@ -75,6 +75,7 @@ rebuilt from pool swap events), follower flow among watched wallets, wallet lead
 | `relay_wait_s` / `relay_watch_s` | 2.5 / 180 | how long to wait for Relay before buying, and for how long after a fill an unknown payer is re-checked |
 | `relay_min_funded` | 2 | a payer becomes a "stranger" once it has bought into this many tracked wallets |
 | `relay_unknown` | buy | `buy` or `skip` when Relay has not named the payer in time |
+| `requote_on_slippage` | true | when the buy reverts with "slippage", re-quote once and retry if the price is still within the impact cap |
 
 ## What counts as a signal
 
