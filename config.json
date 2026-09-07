@@ -67,5 +67,10 @@
   "holder_probe_pool_counts": false,
   "bytecode_blocklist": [
     "0x109b1bd8dad9590e8818d85b9b9bdd081cd95b1b"
-  ]
+  ],
+  "relay_gate": true,
+  "relay_wait_s": 2.5,
+  "relay_watch_s": 180,
+  "relay_min_funded": 2,
+  "relay_unknown": "buy"
 }

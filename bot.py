@@ -881,6 +881,95 @@ def received(rec, token):
                and lg["topics"][0] == TRANSFER_TOPIC and "0x" + lg["topics"][2][-40:] == me)
 
 
+# ---------------------------------------------------------------- who paid? (Relay)
+# fomo wallets are funded through Relay (relay.link): a fomo buy is a Relay request "take my
+# USDC on Solana, deliver token X to my wallet", submitted by Relay's solver keys (0xf70da978..
+# and friends — what this file used to call fomo's payer) and settled by Relay's router
+# (0xb92fe925..). Relay lets any user name any recipient, so a scammer can buy their own coin
+# INTO a famous wallet and the chain shows a fill identical to the trader's own (MEGADUCK into
+# runitbackghost was paid by CHkt9dz8..; PEZ into unipcs by PEZ's own deployer). The receipt
+# cannot tell them apart; Relay's public index names the paying `user`.
+
+RELAY = "https://api.relay.link/requests/v2"
+_relay_s = requests.Session()
+_relay_s.headers["User-Agent"] = "rh-copybot/0.1"
+
+
+def load_solana():
+    """evm wallet -> its paired Solana wallet (solana.json, built from the scanner's traders.json)."""
+    for f in (ROOT / "solana.json", Path(__file__).resolve().parent / "solana.json"):
+        try:
+            return {k.lower(): v for k, v in json.loads(f.read_text()).items()}
+        except Exception:
+            continue
+    return {}
+
+
+SOLANA = load_solana()
+_relay_funded_cache = {}  # payer -> (ts, n)
+
+
+def relay_lookup(tx):
+    """Paying wallet for a fill: a string, "" when Relay has no request for the tx (not a
+    Relay fill), None when Relay could not be asked / has not indexed it yet."""
+    try:
+        r = _relay_s.get(RELAY, params={"hash": tx}, timeout=5)
+        if r.status_code != 200:
+            return None
+        reqs = r.json().get("requests") or []
+    except Exception:
+        return None
+    if not reqs:
+        return None  # not indexed yet (the same answer as "never a Relay fill"; the watch keeps asking)
+    return reqs[0].get("user") or ""
+
+
+def relay_funded(payer):
+    """How many distinct tracked wallets this payer has bought into (Relay's per-user feed)."""
+    hit = _relay_funded_cache.get(payer)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    try:
+        r = _relay_s.get(RELAY, params={"user": payer, "limit": 50}, timeout=5)
+        reqs = r.json().get("requests") or []
+    except Exception:
+        return None
+    tracked = {a.lower() for a in WALLETS} | set(SOLANA)
+    n = len({(q.get("recipient") or "").lower() for q in reqs} & tracked)
+    _relay_funded_cache[payer] = (time.time(), n)
+    return n
+
+
+def relay_judge(payer, wallet):
+    """self: the trader's own wallet paid (their paired Solana wallet or the EVM wallet
+    itself). stranger: someone who also funds OTHER tracked wallets — planters spray
+    (CHkt9dz8.. funded 16 of ours). second: a payer seen with this one wallet only, treated
+    as the trader's own second wallet (one paid \$57K of CASHCAT into a single trader)."""
+    if payer is None:
+        return "unknown", None
+    if payer == "":
+        return "norelay", None
+    w = wallet.lower()
+    if payer.lower() == w or payer == SOLANA.get(w):
+        return "self", None
+    n = relay_funded(payer)
+    if n is None:
+        return "unknown", None
+    return ("stranger" if n >= CFG.get("relay_min_funded", 2) else "second"), n
+
+
+def relay_verdict(tx, wallet, deadline):
+    """Poll Relay for the payer until `deadline` (epoch). {"funding", "payer", "funded"}."""
+    while True:
+        payer = relay_lookup(tx)
+        if payer is not None:
+            funding, n = relay_judge(payer, wallet)
+            return {"funding": funding, "payer": payer, "funded": n}
+        if time.time() + 0.3 > deadline:
+            return {"funding": "unknown", "payer": None, "funded": None}
+        time.sleep(0.3)
+
+
 # ---------------------------------------------------------------- holder probe (blacklist honeypots)
 
 _INSUFFICIENT = ("exceeds balance", "insufficient", "0xe450d38c", "0xf4d678b8")  # OZ/Solady "not enough balance"
@@ -1285,13 +1374,19 @@ def handle_buy_signal(ev, tok, raw):
             return skip(f"thin pool ({fmt_usd(info['liquidity'])}) with only {info['sells24']} sells in 24h")
     # ask whether the token's previous buyers can still sell — runs alongside route discovery
     # so it costs no latency (see holder_probe)
-    probe_box, probe_thread = {}, None
+    probe_box, probe_thread, relay_thread = {}, None, None
+    t_probe = time.time()
     if CFG.get("holder_probe", True):
         def _probe():
             probe_box["code"] = bytecode_reason(tok)
             probe_box["r"] = holder_probe(tok, ev["wallet"], ev["block"])
         probe_thread = threading.Thread(target=_probe, daemon=True)
         probe_thread.start()
+    if CFG.get("relay_gate", True):
+        relay_thread = threading.Thread(
+            target=lambda: probe_box.update(relay=relay_verdict(ev["tx"], ev["wallet"],
+                                                                t_probe + CFG.get("relay_wait_s", 2.5))), daemon=True)
+        relay_thread.start()
     try:
         legs_buy, legs_sell, desc, depth = discover_route(tok)
     except Exception as e:
@@ -1326,6 +1421,15 @@ def handle_buy_signal(ev, tok, raw):
             why = holder_probe_reason(probe)
             if why:
                 return skip(why)
+    funding = {"funding": "off", "payer": None, "funded": None}
+    if relay_thread is not None:
+        relay_thread.join(max(0.0, t_probe + CFG.get("relay_wait_s", 2.5) - time.time()))
+        funding = probe_box.get("relay") or {"funding": "unknown", "payer": None, "funded": None}
+        sig.update(funding=funding["funding"], payer=funding["payer"], payer_wallets=funding["funded"])
+        if funding["funding"] == "stranger":
+            return skip(f"planted: paid by {funding['payer'][:10]}.. who buys into {funding['funded']} tracked wallets (Relay)")
+        if funding["funding"] == "unknown" and CFG.get("relay_unknown", "buy") == "skip":
+            return skip("Relay has not named the payer yet (relay_unknown = skip)")
 
     t_route = time.time()  # route discovered + quoted
     t0 = t_route
@@ -1356,7 +1460,8 @@ def handle_buy_signal(ev, tok, raw):
            "initial_raw": got, "remaining_raw": got, "legs_sell": legs_sell, "route": desc,
            "stages_done": [], "origin_exiting": False, "origin_done": False,
            "usdg_out": 0.0, "sells": [], "retry_after": 0, "paper": not CFG["live"],
-           "signal_age_s": sig["signal_age_s"], "latency": None, "pool_age_min": age}
+           "signal_age_s": sig["signal_age_s"], "latency": None, "pool_age_min": age,
+           "funding": funding["funding"], "payer": funding["payer"]}
     STATE["positions"][tok] = pos
     save_state()
 
@@ -1780,6 +1885,21 @@ def run_exits():
                 del STATE["positions"][tok]
                 save_state()
                 continue
+            if pos.get("funding") == "unknown" and CFG.get("relay_gate", True) and \
+                    elapsed < CFG.get("relay_watch_s", 180) and now - pos.get("_relay_at", 0) > 3:
+                pos["_relay_at"] = now
+                v = relay_verdict(pos["signal_tx"], pos["origin"], now)  # one lookup, no waiting
+                if v["funding"] != "unknown":
+                    pos.update(funding=v["funding"], payer=v["payer"])
+                    save_state()
+                    if v["funding"] == "stranger" and pos["remaining_raw"] > 0:
+                        log(f"  [ALERT] {pos['symbol']}: Relay says the origin buy was PLANTED by {v['payer'][:10]}.. "
+                            f"(funds {v['funded']} tracked wallets) — selling everything now, before the blacklist reaches us")
+                        sell(pos, pos["remaining_raw"], "planted (Relay payer is a stranger)")
+                        pos["stages_done"] = list(range(len(CFG["exits"])))
+                        pos["origin_done"] = True
+                        save_state()
+                        continue
             for i, st in enumerate(CFG["exits"]):
                 if i in pos["stages_done"] or elapsed < stage_seconds(st):
                     continue
@@ -2171,6 +2291,21 @@ def cmd_status():
               f"{fmt_usd(paper_cash() + held)} (started {fmt_usd(CFG['paper_cash_usd'])})")
 
 
+def cmd_payer(tx, wallet=None):
+    payer = relay_lookup(tx)
+    if wallet is None and payer is not None:
+        try:
+            rec = rpc("eth_getTransactionReceipt", [tx])
+            tracked = {a.lower() for a in WALLETS}
+            wallet = next(("0x" + l["topics"][2][-40:] for l in rec["logs"] if l["topics"][0] == TRANSFER_TOPIC
+                           and len(l["topics"]) == 3 and "0x" + l["topics"][2][-40:] in tracked), None)
+        except Exception:
+            wallet = None
+    funding, n = relay_judge(payer, wallet or ZERO)
+    print(f"payer: {payer!r}  recipient (tracked): {wallet and WALLETS.get(wallet.lower(), wallet)}  "
+          f"verdict: {funding}" + (f"  (payer buys into {n} tracked wallets)" if n is not None else ""))
+
+
 def cmd_route(token):
     info = token_info(token, fresh=True)
     meta = token_meta(token)
@@ -2271,6 +2406,8 @@ if __name__ == "__main__":
         cmd_status()
     elif args[0] == "route":
         cmd_route(args[1])
+    elif args[0] == "payer":
+        cmd_payer(args[1], args[2] if len(args) > 2 else None)
     elif args[0] == "holdings":
         cmd_holdings(args[1])
     elif args[0] == "sell":
