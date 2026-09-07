@@ -57,5 +57,15 @@
   "unsellable_hours": 3,
   "quarantine_window_hours": 48,
   "quarantine_min_rugs": 3,
-  "quarantine_rug_rate": 0.5
+  "quarantine_rug_rate": 0.5,
+  "holder_probe": true,
+  "holder_probe_count": 5,
+  "holder_probe_min_age_s": 30,
+  "holder_probe_lookback_blocks": 6000,
+  "holder_probe_wait_s": 1.0,
+  "holder_probe_min_trapped": 2,
+  "holder_probe_pool_counts": false,
+  "bytecode_blocklist": [
+    "0x109b1bd8dad9590e8818d85b9b9bdd081cd95b1b"
+  ]
 }

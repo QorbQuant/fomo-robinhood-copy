@@ -66,6 +66,11 @@ rebuilt from pool swap events), follower flow among watched wallets, wallet lead
 | `skip_stock_tokens` | true | ignore Robinhood tokenized stocks/ETFs (on-chain name ends "• Robinhood Token") |
 | `exclude_tokens` | [] | extra symbols or addresses never to copy |
 | `honeypot_check` | true | skip tokens with many buys and ~no sells on dexscreener |
+| `holder_probe` | true | before buying, ask the chain whether the token's last few buyers can still move it (see below) |
+| `holder_probe_count` / `holder_probe_min_age_s` | 5 / 30 | how many recent buyers to test, ignoring ones younger than this (the blocker has not reached them yet) |
+| `holder_probe_min_trapped` | 2 | skip when this many probed holders are blocked (or one is and none is free) |
+| `holder_probe_wait_s` | 1.0 | how long to wait for the probe after routing before buying without it |
+| `bytecode_blocklist` | [0x109b1bd8…] | skip tokens whose bytecode carries one of these constants (the PEZ/MEGADUCK honeypot build) |
 
 ## What counts as a signal
 
@@ -77,7 +82,22 @@ rebuilt from pool swap events), follower flow among watched wallets, wallet lead
 - **Origin exit**: the wallet that triggered the position *sends* that token
   into a swap or contract. Any amount counts as "starting to exit".
 
-## Files
+## Blacklist honeypots and the holder probe
+
+The "Blocked: cannot sell" family (PEZ, PENZ, PEZZED, PEZZEL, ZEP, MEGADUCK, RIP) is a
+token whose owner runs a bot that blacklists every buyer within about a minute of their
+buy, while the operator's own wallets keep selling so the chart shows sells. A sell
+simulation at buy time passes (we are not on the list yet) and the +5 min sell reverts.
+What is visible at buy time is the *previous* buyers: at the moment of every one of
+those signals, the holders who had bought 30 s or more earlier were already blocked.
+So the bot fetches the token's last few buyers (one address-indexed log query on the
+public node), asks the chain in one batched call whether each can still transfer 1 wei
+to the pool and to a plain address, and skips the buy when they cannot. The signal
+wallet, which bought seconds ago, is probed too: if it fails in the same way with a
+bare custom error, the token simply forbids direct transfers (a token-wide rule, sells
+through the router still work) and the probe stays quiet. It runs in a thread alongside
+route discovery, so it adds no latency. `python bot.py route <token>` prints the verdict.
+
 
 - `bot.py` — everything: watcher, routing, execution, exits, CLI
 - `contracts/src/CopyRouter.sol` — stateless swap executor (route passed per call)

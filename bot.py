@@ -216,6 +216,28 @@ def rpc_batch(calls, url=None):
     return [b["result"] for b in body]
 
 
+def rpc_batch_raw(calls, url=None):
+    """Like rpc_batch but returns the raw per-call answers ({"result":..} or {"error":..})
+    instead of raising on the first error — for probes where a revert IS the answer."""
+    payload = [{"jsonrpc": "2.0", "id": i, "method": m, "params": p} for i, (m, p) in enumerate(calls)]
+    target = url or rpc_url()
+    try:
+        r = _s.post(target, json=payload, timeout=20)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        if target == RPC_URL and not url:
+            _primary_failed(e)
+            if rpc_url() != target:
+                return rpc_batch_raw(calls)
+        raise
+    if target == RPC_URL:
+        _rpc_health["fails"] = 0
+    body = r.json()
+    if not isinstance(body, list):
+        raise RuntimeError(f"batch: {str(body)[:120]}")
+    return [b for b in sorted(body, key=lambda x: x["id"])]
+
+
 def selector(sig):
     return keccak(text=sig)[:4]
 
@@ -859,6 +881,146 @@ def received(rec, token):
                and lg["topics"][0] == TRANSFER_TOPIC and "0x" + lg["topics"][2][-40:] == me)
 
 
+# ---------------------------------------------------------------- holder probe (blacklist honeypots)
+
+_INSUFFICIENT = ("exceeds balance", "insufficient", "0xe450d38c", "0xf4d678b8")  # OZ/Solady "not enough balance"
+DEAD = "0x000000000000000000000000000000000000dEaD"
+
+
+def _revert_reason(err):
+    m = err if isinstance(err, str) else json.dumps(err)
+    i = m.find("08c379a0")
+    if i >= 0:  # Error(string)
+        h = m[i + 8:]
+        try:
+            ln = int(h[64:128], 16)
+            return bytes.fromhex(h[128:128 + ln * 2]).decode(errors="replace")
+        except Exception:
+            pass
+    j = m.find("0x")
+    return m[j:j + 10] if j >= 0 else m[:40]
+
+
+def recent_holders(token, upto_block, exclude, lookback, count, min_age_blocks):
+    """Distinct addresses that received `token` from the V4 PoolManager (= bought it) in the
+    `lookback` blocks before `upto_block`, newest first. Buyers younger than `min_age_blocks`
+    are left out: the operator's blocker has not processed them yet, so they prove nothing."""
+    logs = rpc("eth_getLogs", [{"fromBlock": hex(max(0, upto_block - lookback)), "toBlock": hex(upto_block),
+                                "address": token, "topics": [TRANSFER_TOPIC, pad(POOL_MANAGER)]}],
+               retries=2, url=FALLBACK_RPC)  # address-indexed query: the public node answers it instantly
+    out = []
+    for lg in reversed(logs):
+        who = "0x" + lg["topics"][2][-40:]
+        if who in exclude or who in out or upto_block - int(lg["blockNumber"], 16) < min_age_blocks:
+            continue
+        out.append(who)
+        if len(out) >= count:
+            break
+    return out
+
+
+def holder_probe(token, signal_wallet, signal_block):
+    """Blacklist honeypots (MEGADUCK, the PEZ family): the owner's bot marks every buyer
+    'Blocked: cannot sell' within about a minute of their buy. At the moment a signal arrives
+    the earlier buyers are therefore already trapped, while the signal wallet — and we, a
+    second later — can still sell for another minute; that is why the buy-time sell
+    simulation passes and the +5 min sell reverts. So ask the chain whether the last few
+    holders can still move 1 wei of the token (to the pool and to a plain address).
+    Returns {"probed", "ok", "trapped", "pool_blocked", "reasons"} or {"error": ..}."""
+    exclude = {signal_wallet.lower(), ZERO, POOL_MANAGER.lower(), DEAD.lower(), (ROUTER or "").lower(),
+               SIGNER.address.lower() if SIGNER else ""}
+    count = CFG.get("holder_probe_count", 5)
+    min_age = int(CFG.get("holder_probe_min_age_s", 30) * 10)
+    try:
+        holders = recent_holders(token, signal_block, exclude, CFG.get("holder_probe_lookback_blocks", 6000),
+                                 count, min_age)
+        if len(holders) < 2:
+            holders = recent_holders(token, signal_block, exclude, 30000, count, min_age)
+    except Exception as e:
+        return {"error": f"holders: {str(e)[:70]}"}
+    if not holders:
+        return {"probed": 0, "ok": 0, "trapped": 0, "pool_blocked": 0, "reasons": []}
+    n = len(holders)
+
+    def xfer(to):
+        return "0xa9059cbb" + to[2:].lower().rjust(64, "0") + "1".rjust(64, "0")
+
+    calls = [("eth_call", [{"from": addr(h), "to": addr(token), "data": xfer(POOL_MANAGER)}, "latest"]) for h in holders]
+    calls += [("eth_call", [{"from": addr(h), "to": addr(token), "data": xfer(DEAD)}, "latest"]) for h in holders]
+    calls += [("eth_call", [{"to": addr(token), "data": "0x70a08231" + h[2:].rjust(64, "0")}, "latest"]) for h in holders]
+    # the signal wallet bought seconds ago and is not blacklisted yet: it tells a token-wide
+    # transfer rule (everyone fails the same way) apart from a blacklist (only old holders fail)
+    sw = signal_wallet
+    calls += [("eth_call", [{"from": addr(sw), "to": addr(token), "data": xfer(DEAD)}, "latest"]),
+              ("eth_call", [{"to": addr(token), "data": "0x70a08231" + sw[2:].rjust(64, "0")}, "latest"])]
+    try:
+        raw = rpc_batch_raw(calls)
+        if len(raw) != 3 * n + 2:
+            raise RuntimeError("short batch")
+    except Exception as e:
+        return {"error": f"probe: {str(e)[:70]}"}
+
+    def verdict(r, bal):
+        if "result" in r and r.get("result") is not None:
+            return "ok"
+        m = json.dumps(r.get("error", "")).lower()
+        if bal == 0 or any(k in m for k in _INSUFFICIENT):
+            return "nobal"  # sold already or dust: proves nothing
+        return _revert_reason(m)
+
+    res = {"probed": n, "ok": 0, "trapped": 0, "pool_blocked": 0, "reasons": []}
+    for i, h in enumerate(holders):
+        b = raw[2 * n + i].get("result")
+        bal = int(b, 16) if b and b != "0x" else 0
+        pool, plain = verdict(raw[i], bal), verdict(raw[n + i], bal)
+        if plain == "ok" and pool == "ok":
+            res["ok"] += 1
+        elif plain not in ("ok", "nobal"):  # cannot move the token at all: blacklisted
+            res["trapped"] += 1
+            res["reasons"].append(plain)
+        elif pool not in ("ok", "nobal"):  # can transfer, cannot hand it to the pool
+            res["pool_blocked"] += 1
+            res["reasons"].append("pool: " + pool)
+    res["reasons"] = sorted(set(res["reasons"]))[:3]
+    b = raw[3 * n + 1].get("result")
+    res["signal"] = verdict(raw[3 * n], int(b, 16) if b and b != "0x" else 0)
+    if res["trapped"] and res["signal"] in res["reasons"] and res["signal"].startswith("0x"):
+        # the fresh buyer trips the same bare custom error as the old holders: a token-wide
+        # rule on direct transfers (RIP: sells through the router worked fine), not a blacklist
+        res.update(note="token-wide transfer rule", trapped_raw=res["trapped"], trapped=0)
+    return res
+
+
+def bytecode_reason(token):
+    """The 'Blocked: cannot sell' family (PEZ, PENZ, PEZZED, PEZZEL, ZEP, MEGADUCK, RIP) ships the
+    same ~8.7KB contract with one hard-coded address constant in it, seen in 7 of 7 of those
+    tokens and in 0 of the other 603 tokens the bots have traded. One getCode, no latency
+    (runs in the probe thread). Operators can rebuild without it, so this is the cheap second
+    layer behind holder_probe, not the main defense."""
+    marks = [m.lower().replace("0x", "") for m in CFG.get("bytecode_blocklist", [])]
+    if not marks:
+        return None
+    try:
+        code = rpc("eth_getCode", [addr(token), "latest"], retries=2).lower()
+    except Exception:
+        return None
+    for m in marks:
+        if m and m in code:
+            return f"token bytecode carries the honeypot family's constant 0x{m[:8]}.. (PEZ/MEGADUCK build)"
+    return None
+
+
+def holder_probe_reason(probe):
+    """Skip reason if the probe says the token is trapping its holders, else None."""
+    if not probe or probe.get("error") or not probe.get("probed"):
+        return None
+    trapped = probe["trapped"] + (probe["pool_blocked"] if CFG.get("holder_probe_pool_counts", False) else 0)
+    if trapped >= CFG.get("holder_probe_min_trapped", 2) or (trapped >= 1 and probe["ok"] == 0):
+        why = probe["reasons"][0] if probe["reasons"] else "revert"
+        return f"{trapped} of the last {probe['probed']} buyers can no longer sell (\"{why}\") — blacklist honeypot"
+    return None
+
+
 # ---------------------------------------------------------------- state
 
 STATE_FILE = DATA / "state.json"
@@ -1110,6 +1272,15 @@ def handle_buy_signal(ev, tok, raw):
         need = CFG.get("thin_min_sells_24h", 5)
         if info["sells24"] < need:
             return skip(f"thin pool ({fmt_usd(info['liquidity'])}) with only {info['sells24']} sells in 24h")
+    # ask whether the token's previous buyers can still sell — runs alongside route discovery
+    # so it costs no latency (see holder_probe)
+    probe_box, probe_thread = {}, None
+    if CFG.get("holder_probe", True):
+        def _probe():
+            probe_box["code"] = bytecode_reason(tok)
+            probe_box["r"] = holder_probe(tok, ev["wallet"], ev["block"])
+        probe_thread = threading.Thread(target=_probe, daemon=True)
+        probe_thread.start()
     try:
         legs_buy, legs_sell, desc, depth = discover_route(tok)
     except Exception as e:
@@ -1126,6 +1297,24 @@ def handle_buy_signal(ev, tok, raw):
         return skip(f"price impact {impact:.1%} for {fmt_usd(CFG['buy_usd'])}")
     if round_trip < -CFG.get("max_round_trip_loss_pct", 15) / 100:
         return skip(f"round trip {round_trip:.1%} (thin pool or tax token)")
+    if probe_thread is not None:
+        probe_thread.join(CFG.get("holder_probe_wait_s", 1.0))
+        probe = probe_box.get("r")
+        if probe_box.get("code"):
+            sig["bytecode"] = "family"
+            return skip(probe_box["code"])
+        if probe_thread.is_alive():
+            sig["holders"] = "timeout"
+            log(f"  [warn] holder probe for {meta['symbol']} still running after routing; buying without it")
+        elif probe and probe.get("error"):
+            sig["holders"] = probe["error"]
+            log(f"  [warn] holder probe for {meta['symbol']} failed: {probe['error']}")
+        elif probe:
+            sig.update(holders_probed=probe["probed"], holders_ok=probe["ok"], holders_trapped=probe["trapped"],
+                       holders_pool_blocked=probe["pool_blocked"], holders_reason=probe["reasons"][:1])
+            why = holder_probe_reason(probe)
+            if why:
+                return skip(why)
 
     t_route = time.time()  # route discovered + quoted
     t0 = t_route
@@ -1988,6 +2177,11 @@ def cmd_route(token):
           f"  (implied ${CFG['buy_usd'] / (out / 10**meta['decimals']):.6g}, "
           f"{(CFG['buy_usd'] / (out / 10**meta['decimals'])) / info['price'] - 1:+.2%} vs market)")
     print(f"  sell back -> {fmt_usd(back / 10**USDG_DEC)} (round trip {back / amount_in - 1:+.2%})")
+    t0 = time.time()
+    head = int(rpc("eth_blockNumber", []), 16)
+    probe = holder_probe(token, ZERO, head)
+    why = bytecode_reason(token) or holder_probe_reason(probe)
+    print(f"  holders: {probe} in {time.time() - t0:.2f}s" + (f"  -> SKIP: {why}" if why else ""))
     print("  legs_buy:", json.dumps(lb))
 
 
