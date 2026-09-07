@@ -59,7 +59,7 @@
   "quarantine_min_rugs": 3,
   "quarantine_rug_rate": 0.5,
   "holder_probe": true,
-  "holder_probe_count": 5,
+  "holder_probe_count": 8,
   "holder_probe_min_age_s": 30,
   "holder_probe_lookback_blocks": 6000,
   "holder_probe_wait_s": 1.0,

@@ -67,7 +67,7 @@ rebuilt from pool swap events), follower flow among watched wallets, wallet lead
 | `exclude_tokens` | [] | extra symbols or addresses never to copy |
 | `honeypot_check` | true | skip tokens with many buys and ~no sells on dexscreener |
 | `holder_probe` | true | before buying, ask the chain whether the token's last few buyers can still move it (see below) |
-| `holder_probe_count` / `holder_probe_min_age_s` | 5 / 30 | how many recent buyers to test, ignoring ones younger than this (the blocker has not reached them yet) |
+| `holder_probe_count` / `holder_probe_min_age_s` | 8 / 30 | how many recent buyers to test, ignoring ones younger than this (the blocker has not reached them yet) |
 | `holder_probe_min_trapped` | 2 | skip when this many probed holders are blocked (or one is and none is free) |
 | `holder_probe_wait_s` | 1.0 | how long to wait for the probe after routing before buying without it |
 | `bytecode_blocklist` | [0x109b1bd8…] | skip tokens whose bytecode carries one of these constants (the PEZ/MEGADUCK honeypot build) |
@@ -91,8 +91,9 @@ simulation at buy time passes (we are not on the list yet) and the +5 min sell r
 What is visible at buy time is the *previous* buyers: at the moment of every one of
 those signals, the holders who had bought 30 s or more earlier were already blocked.
 So the bot fetches the token's last few buyers (one address-indexed log query on the
-public node), asks the chain in one batched call whether each can still transfer 1 wei
-to the pool and to a plain address, and skips the buy when they cannot. The signal
+public node), drops the ones that are contracts (arb bots buy every launch and anti-bot
+tokens reject them), asks the chain in one batched call whether each can still transfer
+1 wei to the pool and to a plain address, and skips the buy when they cannot. The signal
 wallet, which bought seconds ago, is probed too: if it fails in the same way with a
 bare custom error, the token simply forbids direct transfers (a token-wide rule, sells
 through the router still work) and the probe stays quiet. It runs in a thread alongside

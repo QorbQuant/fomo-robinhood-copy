@@ -932,14 +932,17 @@ def holder_probe(token, signal_wallet, signal_block):
     count = CFG.get("holder_probe_count", 5)
     min_age = int(CFG.get("holder_probe_min_age_s", 30) * 10)
     try:
-        holders = recent_holders(token, signal_block, exclude, CFG.get("holder_probe_lookback_blocks", 6000),
-                                 count, min_age)
+        try:
+            holders = recent_holders(token, signal_block, exclude, CFG.get("holder_probe_lookback_blocks", 6000),
+                                     count, min_age)
+        except Exception:
+            holders = recent_holders(token, signal_block, exclude, 1500, count, min_age)  # busy token: shorter window
         if len(holders) < 2:
             holders = recent_holders(token, signal_block, exclude, 30000, count, min_age)
     except Exception as e:
         return {"error": f"holders: {str(e)[:70]}"}
     if not holders:
-        return {"probed": 0, "ok": 0, "trapped": 0, "pool_blocked": 0, "reasons": []}
+        return {"probed": 0, "ok": 0, "trapped": 0, "pool_blocked": 0, "contracts": 0, "reasons": []}
     n = len(holders)
 
     def xfer(to):
@@ -953,9 +956,12 @@ def holder_probe(token, signal_wallet, signal_block):
     sw = signal_wallet
     calls += [("eth_call", [{"from": addr(sw), "to": addr(token), "data": xfer(DEAD)}, "latest"]),
               ("eth_call", [{"to": addr(token), "data": "0x70a08231" + sw[2:].rjust(64, "0")}, "latest"])]
+    # arb bots (contracts) buy every launch too; they are not honeypot victims, and anti-bot
+    # tokens (SPRM) reject transfers from contracts — so only people's wallets count
+    calls += [("eth_getCode", [addr(h), "latest"]) for h in holders]
     try:
         raw = rpc_batch_raw(calls)
-        if len(raw) != 3 * n + 2:
+        if len(raw) != 4 * n + 2:
             raise RuntimeError("short batch")
     except Exception as e:
         return {"error": f"probe: {str(e)[:70]}"}
@@ -968,8 +974,13 @@ def holder_probe(token, signal_wallet, signal_block):
             return "nobal"  # sold already or dust: proves nothing
         return _revert_reason(m)
 
-    res = {"probed": n, "ok": 0, "trapped": 0, "pool_blocked": 0, "reasons": []}
+    res = {"probed": 0, "ok": 0, "trapped": 0, "pool_blocked": 0, "contracts": 0, "reasons": []}
     for i, h in enumerate(holders):
+        code = (raw[3 * n + 2 + i].get("result") or "0x").lower()
+        if code not in ("0x", "") and not code.startswith("0xef0100"):  # a contract (7702 wallets are people)
+            res["contracts"] += 1
+            continue
+        res["probed"] += 1
         b = raw[2 * n + i].get("result")
         bal = int(b, 16) if b and b != "0x" else 0
         pool, plain = verdict(raw[i], bal), verdict(raw[n + i], bal)
