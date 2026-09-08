@@ -906,12 +906,11 @@ def load_solana():
 
 
 SOLANA = load_solana()
-_relay_funded_cache = {}  # payer -> (ts, n)
 
 
 def relay_lookup(tx):
-    """Paying wallet for a fill: a string, "" when Relay has no request for the tx (not a
-    Relay fill), None when Relay could not be asked / has not indexed it yet."""
+    """Relay's record for a fill: {"referrer", "user", "chain", "depositor"}, or None when
+    Relay has no request for the tx yet (not indexed, or never a Relay fill) / cannot be asked."""
     try:
         r = _relay_s.get(RELAY, params={"hash": tx}, timeout=5)
         if r.status_code != 200:
@@ -920,53 +919,36 @@ def relay_lookup(tx):
     except Exception:
         return None
     if not reqs:
-        return None  # not indexed yet (the same answer as "never a Relay fill"; the watch keeps asking)
-    return reqs[0].get("user") or ""
-
-
-def relay_funded(payer):
-    """How many distinct tracked wallets this payer has bought into (Relay's per-user feed)."""
-    hit = _relay_funded_cache.get(payer)
-    if hit and time.time() - hit[0] < 600:
-        return hit[1]
-    try:
-        r = _relay_s.get(RELAY, params={"user": payer, "limit": 50}, timeout=5)
-        reqs = r.json().get("requests") or []
-    except Exception:
         return None
-    tracked = {a.lower() for a in WALLETS} | set(SOLANA)
-    n = len({(q.get("recipient") or "").lower() for q in reqs} & tracked)
-    _relay_funded_cache[payer] = (time.time(), n)
-    return n
+    q = reqs[0]
+    dep = ((q.get("protocol") or {}).get("deposit") or {}).get("origin") or {}
+    return {"referrer": q.get("referrer"), "user": q.get("user") or "", "chain": dep.get("chainId"),
+            "depositor": dep.get("depositor")}
 
 
-def relay_judge(payer, wallet):
-    """self: the trader's own wallet paid (their paired Solana wallet or the EVM wallet
-    itself). stranger: someone who also funds OTHER tracked wallets — planters spray
-    (CHkt9dz8.. funded 16 of ours). second: a payer seen with this one wallet only, treated
-    as the trader's own second wallet (one paid \$57K of CASHCAT into a single trader)."""
-    if payer is None:
-        return "unknown", None
-    if payer == "":
-        return "norelay", None
-    w = wallet.lower()
-    if payer.lower() == w or payer == SOLANA.get(w):
-        return "self", None
-    n = relay_funded(payer)
-    if n is None:
-        return "unknown", None
-    return ("stranger" if n >= CFG.get("relay_min_funded", 2) else "second"), n
+def relay_judge(rec, wallet):
+    """fomo: the request was made by the fomo app itself (referrer "fomo", fomo's app fees
+    attached) — the trader really pressed buy. planted: a Relay request from anywhere else
+    delivering the token into the trader's wallet. The `user`/`depositor` fields are NOT
+    trusted: in Relay's gateway flow the solver submits the deposit and the requester writes
+    whatever address it likes there — ZDOG/ENCRYPTED/HUH "self-paid by" DumbCrayonEater,
+    PoorGoat_ and Salem1299534 were deposits the solver made on Arbitrum with the trader's
+    address typed in. History: referrer fomo 808 buys / 8 rugs / +$14.2K; everything else
+    39 buys / 31 rugs / -$2.8K."""
+    if rec is None:
+        return "unknown"
+    return "fomo" if rec.get("referrer") == "fomo" else "planted"
 
 
 def relay_verdict(tx, wallet, deadline):
-    """Poll Relay for the payer until `deadline` (epoch). {"funding", "payer", "funded"}."""
+    """Poll Relay until `deadline` (epoch). {"funding", "payer", "referrer"}."""
     while True:
-        payer = relay_lookup(tx)
-        if payer is not None:
-            funding, n = relay_judge(payer, wallet)
-            return {"funding": funding, "payer": payer, "funded": n}
+        rec = relay_lookup(tx)
+        if rec is not None:
+            return {"funding": relay_judge(rec, wallet), "payer": rec["user"], "referrer": rec["referrer"],
+                    "chain": rec["chain"]}
         if time.time() + 0.3 > deadline:
-            return {"funding": "unknown", "payer": None, "funded": None}
+            return {"funding": "unknown", "payer": None, "referrer": None, "chain": None}
         time.sleep(0.3)
 
 
@@ -1444,13 +1426,14 @@ def handle_buy_signal(ev, tok, raw):
             why = holder_probe_reason(probe)
             if why:
                 return skip(why)
-    funding = {"funding": "off", "payer": None, "funded": None}
+    funding = {"funding": "off", "payer": None, "referrer": None}
     if relay_thread is not None:
         relay_thread.join(max(0.0, t_probe + CFG.get("relay_wait_s", 2.5) - time.time()))
-        funding = probe_box.get("relay") or {"funding": "unknown", "payer": None, "funded": None}
-        sig.update(funding=funding["funding"], payer=funding["payer"], payer_wallets=funding["funded"])
-        if funding["funding"] == "stranger":
-            return skip(f"planted: paid by {funding['payer'][:10]}.. who buys into {funding['funded']} tracked wallets (Relay)")
+        funding = probe_box.get("relay") or {"funding": "unknown", "payer": None, "referrer": None}
+        sig.update(funding=funding["funding"], payer=funding["payer"], referrer=funding.get("referrer"))
+        if funding["funding"] == "planted":
+            return skip(f"planted: Relay request not from the fomo app (referrer {funding.get('referrer')!r}, "
+                        f"payer {(funding['payer'] or '?')[:10]}.., origin chain {funding.get('chain')})")
         if funding["funding"] == "unknown" and CFG.get("relay_unknown", "buy") == "skip":
             return skip("Relay has not named the payer yet (relay_unknown = skip)")
 
@@ -1923,17 +1906,19 @@ def run_exits():
                 del STATE["positions"][tok]
                 save_state()
                 continue
+            if pos.get("funding") == "unknown" and elapsed >= CFG.get("relay_watch_s", 180):
+                pos["funding"] = "norelay"  # never indexed: not a Relay fill (other routers)
             if pos.get("funding") == "unknown" and CFG.get("relay_gate", True) and \
                     elapsed < CFG.get("relay_watch_s", 180) and now - pos.get("_relay_at", 0) > 3:
                 pos["_relay_at"] = now
                 v = relay_verdict(pos["signal_tx"], pos["origin"], now)  # one lookup, no waiting
                 if v["funding"] != "unknown":
-                    pos.update(funding=v["funding"], payer=v["payer"])
+                    pos.update(funding=v["funding"], payer=v["payer"], referrer=v.get("referrer"))
                     save_state()
-                    if v["funding"] == "stranger" and pos["remaining_raw"] > 0:
-                        log(f"  [ALERT] {pos['symbol']}: Relay says the origin buy was PLANTED by {v['payer'][:10]}.. "
-                            f"(funds {v['funded']} tracked wallets) — selling everything now, before the blacklist reaches us")
-                        sell(pos, pos["remaining_raw"], "planted (Relay payer is a stranger)")
+                    if v["funding"] == "planted" and pos["remaining_raw"] > 0:
+                        log(f"  [ALERT] {pos['symbol']}: Relay says the origin buy was PLANTED (referrer {v.get('referrer')!r}, "
+                            f"payer {(v['payer'] or '?')[:10]}..) — selling everything now, before the pool is pulled")
+                        sell(pos, pos["remaining_raw"], "planted (Relay request not from the fomo app)")
                         pos["stages_done"] = list(range(len(CFG["exits"])))
                         pos["origin_done"] = True
                         save_state()
@@ -2330,18 +2315,12 @@ def cmd_status():
 
 
 def cmd_payer(tx, wallet=None):
-    payer = relay_lookup(tx)
-    if wallet is None and payer is not None:
-        try:
-            rec = rpc("eth_getTransactionReceipt", [tx])
-            tracked = {a.lower() for a in WALLETS}
-            wallet = next(("0x" + l["topics"][2][-40:] for l in rec["logs"] if l["topics"][0] == TRANSFER_TOPIC
-                           and len(l["topics"]) == 3 and "0x" + l["topics"][2][-40:] in tracked), None)
-        except Exception:
-            wallet = None
-    funding, n = relay_judge(payer, wallet or ZERO)
-    print(f"payer: {payer!r}  recipient (tracked): {wallet and WALLETS.get(wallet.lower(), wallet)}  "
-          f"verdict: {funding}" + (f"  (payer buys into {n} tracked wallets)" if n is not None else ""))
+    rec = relay_lookup(tx)
+    if rec is None:
+        print("Relay has no request for this tx (not indexed yet, or not a Relay fill)")
+        return
+    print(f"referrer: {rec['referrer']!r}  user: {rec['user']}  origin chain: {rec['chain']}  "
+          f"depositor: {rec['depositor']}  ->  {relay_judge(rec, wallet or ZERO)}")
 
 
 def cmd_route(token):

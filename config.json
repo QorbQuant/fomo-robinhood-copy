@@ -48,7 +48,7 @@
   "blocked_write_off_hours": 6,
   "plant_gate": true,
   "require_fomo_payer": false,
-  "min_pool_age_minutes": 5,
+  "min_pool_age_minutes": 2,
   "fresh_pool_minutes": 30,
   "fresh_pool_max_liquidity_usd": 500000,
   "young_pool_minutes": 60,
@@ -71,7 +71,6 @@
   "relay_gate": true,
   "relay_wait_s": 2.5,
   "relay_watch_s": 180,
-  "relay_min_funded": 2,
   "relay_unknown": "buy",
   "requote_on_slippage": true,
   "fake_lp_min_buys24": 100
