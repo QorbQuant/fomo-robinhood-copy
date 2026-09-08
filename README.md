@@ -76,6 +76,8 @@ rebuilt from pool swap events), follower flow among watched wallets, wallet lead
 | `relay_min_funded` | 2 | a payer becomes a "stranger" once it has bought into this many tracked wallets |
 | `relay_unknown` | buy | `buy` or `skip` when Relay has not named the payer in time |
 | `requote_on_slippage` | true | when the buy reverts with "slippage", re-quote once and retry if the price is still within the impact cap |
+| `fake_lp_min_buys24` | 100 | a pool showing more than `fresh_pool_max_liquidity_usd` with fewer buys than this in 24h is fake LP at any age |
+| (built in) | | a token that rugged us once is never bought again, cooldown or not |
 
 ## What counts as a signal
 

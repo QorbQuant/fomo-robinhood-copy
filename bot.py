@@ -1274,6 +1274,20 @@ def recently_closed(tok):
     return any(c["token"] == tok.lower() and c["closed_at"] > cutoff for c in STATE["closed"])
 
 
+def rugged_before(tok):
+    """A token that already took $100 off us stays off the list for good. HUH rugged on
+    Sep 6, sat out the 24h cooldown, and was bought and rugged again on Sep 8 from the very
+    same pool."""
+    for c in STATE["closed"]:
+        if c["token"] != tok.lower():
+            continue
+        note = str(c.get("note", "")).lower()
+        if (c.get("pnl_usd") is not None and c["pnl_usd"] <= -0.85 * c.get("buy_usd", 100)) or \
+                any(k in note for k in ("drained", "rugged", "unsellable", "honeypot", "written off")):
+            return True
+    return False
+
+
 def handle_buy_signal(ev, tok, raw):
     """A watched wallet received `raw` of `tok` in a swap. Copy it if new."""
     meta = token_meta(tok)
@@ -1296,6 +1310,8 @@ def handle_buy_signal(ev, tok, raw):
         return skip("excluded by config", quiet=True)
     if CFG.get("skip_stock_tokens", True) and is_stock_token(tok):
         return skip("Robinhood stock token", quiet=True)
+    if rugged_before(tok):
+        return skip("rugged us before — never again", quiet=False)
     if recently_closed(tok):
         return skip("re-entry cooldown")
     try:
@@ -1353,6 +1369,13 @@ def handle_buy_signal(ev, tok, raw):
     if age is not None and age < CFG.get("fresh_pool_minutes", 30) and \
             info["liquidity"] > CFG.get("fresh_pool_max_liquidity_usd", 500000):
         return skip(f"pool {age:.0f} min old already showing {fmt_usd(info['liquidity'])} liquidity (fake LP pattern)")
+    # the same fake-LP bait with a pre-aged pool: ZDOG, ENCRYPTED and HUH (again) were pools
+    # created two days earlier and left idle, showing $0.9-1.6M of "liquidity" with 7-8 buys
+    # in 24h. Every real pool that size we have ever traded had thousands of trades a day
+    # (7 of 7 rugs vs 0 of 24 legit above $500K).
+    if info["liquidity"] > CFG.get("fresh_pool_max_liquidity_usd", 500000) and \
+            info["buys24"] < CFG.get("fake_lp_min_buys24", 100):
+        return skip(f"{fmt_usd(info['liquidity'])} of liquidity but only {info['buys24']} buys in 24h (fake LP pattern)")
     if age is not None and age < CFG.get("young_pool_minutes", 60) and info["buys24"] >= 5 and \
             info["sells24"] / info["buys24"] < CFG.get("young_pool_min_sell_ratio", 0.25):
         return skip(f"young pool with {info['sells24']} sells vs {info['buys24']} buys")

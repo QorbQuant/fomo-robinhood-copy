@@ -73,5 +73,6 @@
   "relay_watch_s": 180,
   "relay_min_funded": 2,
   "relay_unknown": "buy",
-  "requote_on_slippage": true
+  "requote_on_slippage": true,
+  "fake_lp_min_buys24": 100
 }
