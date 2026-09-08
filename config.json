@@ -70,7 +70,7 @@
   ],
   "relay_gate": true,
   "relay_wait_s": 2.5,
-  "relay_watch_s": 180,
+  "relay_watch_s": 300,
   "relay_unknown": "buy",
   "requote_on_slippage": true,
   "fake_lp_min_buys24": 100

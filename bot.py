@@ -926,18 +926,26 @@ def relay_lookup(tx):
             "depositor": dep.get("depositor")}
 
 
+SOLANA_CHAIN = 792703809  # Relay's chain id for Solana
+
+
 def relay_judge(rec, wallet):
-    """fomo: the request was made by the fomo app itself (referrer "fomo", fomo's app fees
-    attached) — the trader really pressed buy. planted: a Relay request from anywhere else
-    delivering the token into the trader's wallet. The `user`/`depositor` fields are NOT
-    trusted: in Relay's gateway flow the solver submits the deposit and the requester writes
-    whatever address it likes there — ZDOG/ENCRYPTED/HUH "self-paid by" DumbCrayonEater,
-    PoorGoat_ and Salem1299534 were deposits the solver made on Arbitrum with the trader's
-    address typed in. History: referrer fomo 808 buys / 8 rugs / +$14.2K; everything else
-    39 buys / 31 rugs / -$2.8K."""
+    """fomo: the trader really pressed buy — the request was the fomo app's (referrer "fomo"),
+    the deposit came in on Solana, and the depositor is the trader's paired Solana wallet.
+    A Solana deposit has to be signed by the depositor, so that combination cannot be
+    written by a third party; everything else in the record (user, depositor on an EVM
+    origin, and the referrer itself) is a free parameter of the quote request. planted:
+    any other Relay request delivering the token into the trader's wallet. History: 806 of
+    808 fomo-app fills pass this (the two misses were a second Solana wallet and an
+    on-chain-origin deposit, -$3 between them); the other 39 Relay fills held 32 rugs."""
     if rec is None:
         return "unknown"
-    return "fomo" if rec.get("referrer") == "fomo" else "planted"
+    paired = SOLANA.get(wallet.lower())
+    if rec.get("referrer") != "fomo":
+        return "planted"
+    if paired is None:
+        return "fomo"  # no paired wallet on file: referrer is the best we have
+    return "fomo" if rec.get("chain") == SOLANA_CHAIN and rec.get("depositor") == paired else "planted"
 
 
 def relay_verdict(tx, wallet, deadline):
@@ -1432,8 +1440,8 @@ def handle_buy_signal(ev, tok, raw):
         funding = probe_box.get("relay") or {"funding": "unknown", "payer": None, "referrer": None}
         sig.update(funding=funding["funding"], payer=funding["payer"], referrer=funding.get("referrer"))
         if funding["funding"] == "planted":
-            return skip(f"planted: Relay request not from the fomo app (referrer {funding.get('referrer')!r}, "
-                        f"payer {(funding['payer'] or '?')[:10]}.., origin chain {funding.get('chain')})")
+            return skip(f"planted: not the trader's own fomo buy (referrer {funding.get('referrer')!r}, "
+                        f"origin chain {funding.get('chain')}, depositor {(funding['payer'] or '?')[:10]}..)")
         if funding["funding"] == "unknown" and CFG.get("relay_unknown", "buy") == "skip":
             return skip("Relay has not named the payer yet (relay_unknown = skip)")
 
